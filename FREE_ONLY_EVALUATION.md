@@ -16,7 +16,7 @@ Optional, to stop the build tools' anonymous telemetry pings (these are free and
 ## 1. The safety net: tests, types, build
 
 ```bash
-npm test            # 340 tests, all offline; models, storage and network are mocked
+npm test            # 355 tests, all offline; models, storage and network are mocked
 npm run typecheck   # tsc --noEmit
 npm run build       # prisma generate + next build; needs no environment variables
 ```
@@ -36,7 +36,7 @@ npm run eval:stub        # writes docs/eval/dev-stub.md
 |---|---|---|---|
 | **Oracle** (positive control) | A scripted ideal agent that replays each case's reference tool calls and builds its reply only from tool output | 40/40 cases, 0 safety violations | The tools, deterministic figures, flags, proposals, hypothetical isolation, and safety checks give exactly the expected outcome for a correct agent. The expectations themselves are consistent. |
 | **Perturbed** (negative control: figures) | The oracle, with every ₹ amount +10% and every % +3 points in the reply | Numeric faithfulness about 1/34, expected figures about 1/23, while tool selection and arguments stay 100% | The number checks catch fabricated figures, independently of tool behaviour |
-| **Dev stub** (negative control: behaviour) | The keyword router used when no key is configured | About 17/40 cases; clarification 0/7; hypothetical labelling 0/5 | The behavioural graders catch an agent that doesn't ask, propose, or label hypotheticals |
+| **Dev stub** (negative control: behaviour) | The keyword router used when no key is configured | Earlier stub (historical): 17/40 cases; clarification 0/7; hypothetical labelling 0/5; 0 safety violations. Current stub (re-run 2026-10-10 UTC): 20/40 cases; numeric faithfulness 33/33; clarification 2/7; hypothetical labelling 3/5; 0 safety violations (see `docs/eval/dev-stub.md`) | The behavioural graders catch an agent that doesn't ask, propose, or label hypotheticals |
 
 Pass/fail counts are deterministic. Timings in these reports include the offline token-estimation wrapper, so they are **not** latency figures.
 

@@ -328,3 +328,41 @@ A review then hardened the guard to fail closed:
 - the Prisma CLI runs via Node with no shell, with the URL passed only in the environment and output redacted.
 
 Known limitation: host aliases are not resolved, for example `localhost` vs `127.0.0.1`, or a provider's pooled vs direct host. The name, empty-or-marked, and app-tables-only rules remain the backstop.
+
+## D54. Deterministic stub: share, follow-ups, percentage what-ifs, honest appreciation (2026-10-11)
+The deployed demo runs with `LLM_PROVIDER=stub`, so its keyword router is what users actually meet. It answered "How much of my portfolio is retail?" with a property list, couldn't follow "which of those…", ignored "what if rent rises 10%", and answered an appreciation question with an overview.
+
+It now handles these cases. It is still a pattern router, not an LLM:
+- **Share questions** call `portfolio_analytics` with a filter. The filtered result now also carries the whole-portfolio total (`wholePortfolio`), so "₹21.2 Cr of ₹29.7 Cr" needs no arithmetic outside the backend.
+- **Follow-ups** ("which of those…") use the `FOCUS` line that the system prompt already gives a real model. The stub sees no more than a model would, and nothing is hardcoded: a test changes a rent and the answer changes with it.
+- **Percentage what-ifs:**
+  - `run_scenario` accepts `changePct` as an alternative to an absolute amount, with exactly one per change.
+  - The backend computes the figure from the real one (`applyPercentChange`, whole rupees), so neither the stub nor a real model does the arithmetic.
+  - The scenario result now lists each property's before, after and delta.
+  - It is still hypothetical only, and nothing is written.
+- **Appreciation / ROI** leads with "can't be calculated" and the exact data gaps. The current value follows, marked as context only.
+
+**Unchanged:**
+- template figures are copied verbatim from tool output, and the per-turn faithfulness check still applies;
+- tools use only the session user's data, and other users' ids are "not found";
+- real changes still go through propose → confirm;
+- `LLM_PROVIDER=stub` still makes no model call.
+
+The `changePct` path has **not** been exercised with Gemini or OpenRouter. It is covered only by offline tests.
+
+**Caught by `npm run eval:stub`, then fixed:**
+- **The first version's help messages contained example ids and percentages** ("P001 … by 10%"). These caused 8 safety-grader flags and 16 unsupported figures. In production they would have flagged an unrecognised message as `unsupported_numbers`, and for other users the ids were not their own.
+  - The help text is now generic, using placeholders such as "<property>" and "<n>%".
+  - Rule: help text contains no figures and no property ids.
+- **"Best rental yield" was routed as a rent ranking.** Yield is now matched before rent.
+- Regression tests in `tests/stubFormat.test.ts` check that:
+  - help replies contain no numbers;
+  - they name no property id, including other users' ids;
+  - "rental yield" ranks by yield.
+- After the fix, the re-run (2026-10-10 UTC, uncommitted working tree) measured:
+  - 20/40 cases;
+  - numeric faithfulness 33/33;
+  - **0 safety violations**;
+  - no case that passed for the previous stub now fails.
+
+**Trade-off:** each new phrasing is another regular expression, so wording outside the patterns still falls back to the help message. The real fix for open-ended questions is a real model.

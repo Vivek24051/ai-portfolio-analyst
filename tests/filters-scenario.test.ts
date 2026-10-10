@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyFilter, propertyFilterSchema } from "@/domain/filters";
-import { runScenario, ScenarioError } from "@/domain/scenario";
+import { applyPercentChange, runScenario, ScenarioError } from "@/domain/scenario";
 import { loadSeed, propsOf } from "./helpers";
 
 const ids = (ps: { id: string }[]) => ps.map((p) => p.id);
@@ -39,7 +39,33 @@ describe("filters — sample requests", () => {
   });
 });
 
+describe("applyPercentChange", () => {
+  it("applies a percentage to whole rupees exactly, in both directions", () => {
+    expect(applyPercentChange(7_200_000, 10)).toBe(7_920_000); // ₹72 L + 10% = ₹79.2 L
+    expect(applyPercentChange(6_000_000, -10)).toBe(5_400_000);
+    expect(applyPercentChange(9_999, 12.5)).toBe(11_249); // rounded to the nearest rupee
+    expect(applyPercentChange(5_000_000, -100)).toBe(0);
+  });
+
+  it("rejects changes below -100% and non-numbers", () => {
+    expect(() => applyPercentChange(1_000, -101)).toThrow(ScenarioError);
+    expect(() => applyPercentChange(1_000, Number.NaN)).toThrow(ScenarioError);
+  });
+});
+
 describe("runScenario", () => {
+  it("reports each property's before / after / delta for value and rent overrides", () => {
+    const r = runScenario(propsOf("U001"), {
+      valueOverrides: [{ propertyId: "P002", newValueInr: 80_000_000 }],
+      rentOverrides: [{ propertyId: "P001", newAnnualRentInr: 7_920_000 }],
+    });
+    expect(r.propertyChanges).toEqual([
+      { propertyId: "P002", field: "value", beforeInr: 85_000_000, afterInr: 80_000_000, deltaInr: -5_000_000 },
+      { propertyId: "P001", field: "annualRent", beforeInr: 7_200_000, afterInr: 7_920_000, deltaInr: 720_000 },
+    ]);
+    expect(r.deltas.totalAnnualRentInr).toBe(720_000);
+  });
+
   it("excluding the Bandra property (P001) from U001's portfolio", () => {
     const r = runScenario(propsOf("U001"), { excludePropertyIds: ["P001"] });
     expect(r.hypothetical).toBe(true);

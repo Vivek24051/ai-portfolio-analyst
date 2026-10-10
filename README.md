@@ -121,18 +121,24 @@ No key is needed for any of this: without `OPENROUTER_API_KEY` the app uses the 
 
 Without `OPENROUTER_API_KEY` (the default, and how this project was built and evaluated), the "model" is `src/agent/devStubModel.ts`. It is **a keyword router, not an LLM**.
 
-**What the dev stub does:**
-- Recognises a few phrasings (portfolio overview or total, "show my retail/office/residential properties", "properties in Mumbai/Bengaluru/Delhi NCR…", highest rent, yield) and calls the **real** tools, which run the real calculations on the real data.
-- Turns the tool result into a short readable answer using fixed templates (`src/agent/stubFormat.ts`), prefixed `[dev stub — template reply, no LLM]`. Every figure is copied verbatim from the tool output; nothing is computed or invented.
-- Can stream word by word (`DEV_STUB_STREAM_DELAY_MS`, default 12 ms) so the streaming UI can be demonstrated.
+**What the dev stub does:** it matches regular-expression patterns in the message and calls the **real** tools, which run the real calculations on the signed-in user's data. Examples it recognises:
+- portfolio overview or total; "show my retail/office/residential properties"; "properties in Mumbai/Bengaluru/Delhi NCR…"; highest rent; yield;
+- **share of the portfolio**: "How much of my portfolio is retail?", "What percentage … is retail?". It reports the slice's value, the whole portfolio's value, the share and the property count;
+- **follow-ups on the previous result**: "Which of those earns more annual rent?" ranks the properties from the previous answer. It reads them from the same `FOCUS` line in the system prompt that a real model gets;
+- **what-ifs**: "What if the rent of P001 increases by 10%?", "What if I exclude the Bandra property?", "How would that change my portfolio?". The percentage goes to `run_scenario` as `changePct`, and the backend computes the new figure. The reply is labelled hypothetical, and nothing is saved;
+- **appreciation / ROI**: it says plainly that these can't be calculated (no purchase dates; purchase prices missing) and lists the gaps. The current value is shown only as context.
+
+Replies use fixed templates (`src/agent/stubFormat.ts`), prefixed `[dev stub — template reply, no LLM]`. Figures in template replies are copied verbatim from the tool output. It can stream word by word (`DEV_STUB_STREAM_DELAY_MS`, default 12 ms) so the streaming UI can be demonstrated.
 
 **What it does not do:**
-- Choose between all nine tools.
+- Understand wording outside its patterns. Anything else gets a help message.
+- Choose freely between all nine tools.
 - Ask clarifying questions.
 - Propose or confirm property changes.
-- Run what-if scenarios.
-- Resolve follow-ups like "which one…".
+- Compare arbitrary groups (e.g. residential vs commercial).
 - Write natural-language answers.
+
+**Help text carries no figures or ids.** Unrecognised messages get a generic help reply with placeholders such as "<property>" and "<n>%". It contains no example figures, which the faithfulness check would flag, and no example property ids, which could belong to another user. An earlier version of these changes broke this rule, and "best rental yield" was routed as a rent ranking. Both were caught by `npm run eval:stub` and fixed. Regression tests are in `tests/stubFormat.test.ts`.
 
 The chat UI and admin pages show a banner whenever the stub is active.
 
@@ -338,7 +344,10 @@ The oracle and perturbed controls also run inside `npm test` (`tests/eval.test.t
 |---|---|---|---|---|
 | Oracle (must pass) | 40/40 | 34/34 | 7/7 | 0 |
 | Perturbed oracle (falsified figures; must be caught) | 12/40 | 1/34 | 7/7 | 0 |
-| Dev stub (keyword router; must be caught) | 17/40 | 31/31 (copies tool figures verbatim) | 0/7 | 0 |
+| Dev stub, earlier version (keyword router; must be caught) — historical, commit `76a9571` | 17/40 | 31/31 (copies tool figures verbatim) | 0/7 | 0 |
+| Dev stub, current working tree (re-run 2026-10-10 UTC) | 20/40 | 33/33 | 2/7 | 0 |
+
+The current stub handles more questions (share, follow-ups, what-ifs), but it is still a keyword router and remains a negative control. An intermediate version, whose help text contained example ids and percentages, measured 8 safety flags and 16 unsupported figures. That was fixed before this result. Details: [docs/eval/dev-stub.md](docs/eval/dev-stub.md).
 
 The runner also has an `--mode openrouter` for a real model. It is **not used** in this free-only submission and refuses to start without explicit opt-in flags and spend caps ([PERFORMANCE.md §5](PERFORMANCE.md)).
 
@@ -425,7 +434,7 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 - **UI tested without a browser.** The UI has been tested in jsdom and over local HTTP, but not in a real browser by an automated test, and not with a real LLM's streamed output.
 - **Admin auth** is single-account HTTP Basic auth: there is no logout (close the browser), no roles, and the lockout counter is per server instance.
 - **Token usage and cost** are recorded only if the provider reports them. The cost field's location was verified on synthetic OpenRouter payloads only.
-- **Empty attention queue in a live demo.** With the dev stub, the admin "needs attention" queue stays empty, because the stub never hands off, fails, or invents figures. Flagging is demonstrated by the tests and the evaluation instead (see the walkthrough).
+- **Empty attention queue in a live demo.** With the dev stub, the admin "needs attention" queue stays empty: the stub never hands off or fails, its template answers copy figures from tool output, and its help text contains no figures. Flagging is demonstrated by the tests and the evaluation instead (see the walkthrough).
 
 ## Demo walkthrough (5–10 minutes, free)
 
@@ -440,7 +449,7 @@ Setup before presenting:
 | 1:00–3:00 | Chat at `localhost:3000`. **With Gemini:** Rahul → "What does my portfolio look like?" → "Tell me about my retail properties" → "Which one is performing better?" → "What if I exclude the Bandra property?" (Hypothetical label) → "Change my Bandra retail property value to ₹12.5 crore" (Confirm card). **With the dev stub:** "portfolio overview", "show my retail properties", and Priya → "Show me my properties in Mumbai" | Streaming tool steps; figures come from tools (₹29.7 Cr); follow-up context; hypothetical vs. real; nothing is saved without Confirm; Alibaug excluded from Mumbai |
 | 3:00–4:30 | `/admin` → the conversation just created → execution trace | Spans, model and tool calls, the numeric-faithfulness result, "—" for tokens and cost the stub doesn't report; Basic auth on every admin page and API |
 | 4:30–6:30 | `SOUL.md` and the code: `src/agent/tools.ts`, `src/server/services/propertyActions.ts`, `src/domain/scenario.ts` | Strict schemas with no `userId`; propose → confirm (same-turn self-confirm is blocked); hypotheticals run on a clone; user scoping |
-| 6:30–8:30 | Terminal: `npm test` (340 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
+| 6:30–8:30 | Terminal: `npm test` (355 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
 | 8:30–10:00 | `PERFORMANCE.md` §2, §6, §7 | Measured: about 4 ms server overhead per turn and about 10 ms over local HTTP. Tool schemas are 83% of input tokens. **Not measured:** real LLM, Postgres, deployment. Next steps: prompt caching, a queue for WhatsApp, shared rate limits |
 
 ## External dependencies

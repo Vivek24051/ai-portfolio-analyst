@@ -11,9 +11,9 @@ import { z } from "zod";
 import { logError } from "@/server/redact";
 import { compareGroups, pct, rankProperties, RANK_METRICS, summarizePortfolio, toView } from "@/domain/analytics";
 import { applyFilter, propertyFilterSchema, type PropertyFilter } from "@/domain/filters";
-import { moneySchema, toInr, MoneyError } from "@/domain/money";
+import { formatInr, moneySchema, toInr, MoneyError } from "@/domain/money";
 import { createPropertyInputSchema, updatePropertyChangesSchema } from "@/domain/propertyChanges";
-import { runScenario, ScenarioError, scenarioInputSchema, type ScenarioInput } from "@/domain/scenario";
+import { applyPercentChange, runScenario, ScenarioError, scenarioInputSchema, type ScenarioInput } from "@/domain/scenario";
 import { ASSET_CLASSES } from "@/domain/types";
 import type { Property } from "@/domain/types";
 import {
@@ -160,6 +160,7 @@ const portfolioAnalytics = defineTool({
     return {
       scope: `filtered: ${subset.length} of ${all.length} properties`,
       shareOfWholePortfolioValue: fmtPct(pct(part.totalValueInr, whole.totalValueInr)),
+      wholePortfolio: { properties: whole.propertyCount, totalValue: formatInr(whole.totalValueInr) },
       ...presentSummary(part, args.sections),
     };
   },
@@ -197,20 +198,49 @@ const compareGroupsTool = defineTool({
 
 // ---------- Scenario tool (hypothetical only) ----------
 
+/** Either an absolute new figure or a percentage of the CURRENT real figure — never both. */
+const percentChangeSchema = z
+  .number()
+  .min(-100)
+  .max(1000)
+  .describe("Percentage change from the current real figure, e.g. 10 for +10% or -5 for -5%. The backend computes the new figure.");
+const exactlyOne = (a: unknown, b: unknown) => (a === undefined) !== (b === undefined);
+
+/** Resolves a percentage change against the user's real figure (unknown ids fail like runScenario does). */
+function resolvePercent(portfolio: Property[], propertyId: string, field: "currentValueInr" | "annualRentInr", changePct: number): number {
+  const p = portfolio.find((x) => x.id === propertyId);
+  if (!p) throw new ScenarioError(`Property not found in this portfolio: ${propertyId}`);
+  return applyPercentChange(p[field], changePct);
+}
+
 const scenarioTool = defineTool({
   name: "run_scenario",
   description:
     "HYPOTHETICAL what-if analysis. Never changes real data. Exclude properties, change values or rents, or add an " +
-    "imaginary property, and get baseline vs scenario with deltas. basedOn='active_scenario' builds on (or, with no " +
+    "imaginary property, and get baseline vs scenario with deltas. For 'rent up 10%' pass changePct (the backend " +
+    "computes the new figure); otherwise pass the new amount. basedOn='active_scenario' builds on (or, with no " +
     "changes, re-runs) the previous scenario for follow-ups like 'how would that change my portfolio?'.",
   writes: false,
   schema: z
     .object({
       basedOn: z.enum(["new", "active_scenario"]).default("new"),
       excludePropertyIds: z.array(z.string().max(64)).max(50).optional(),
-      valueChanges: z.array(z.object({ propertyId: z.string().max(64), newValue: moneySchema }).strict()).max(50).optional(),
+      valueChanges: z
+        .array(
+          z
+            .object({ propertyId: z.string().max(64), newValue: moneySchema.optional(), changePct: percentChangeSchema.gt(-100).optional() })
+            .strict()
+            .refine((c) => exactlyOne(c.newValue, c.changePct), "Give exactly one of newValue or changePct"),
+        )
+        .max(50)
+        .optional(),
       rentChanges: z
-        .array(z.object({ propertyId: z.string().max(64), newAnnualRent: moneySchema }).strict())
+        .array(
+          z
+            .object({ propertyId: z.string().max(64), newAnnualRent: moneySchema.optional(), changePct: percentChangeSchema.optional() })
+            .strict()
+            .refine((c) => exactlyOne(c.newAnnualRent, c.changePct), "Give exactly one of newAnnualRent or changePct"),
+        )
         .max(50)
         .optional(),
       additions: z
@@ -231,10 +261,17 @@ const scenarioTool = defineTool({
     })
     .strict(),
   async run(ctx, args) {
+    const portfolio = await activePortfolio(ctx);
     const changes: Required<ScenarioInput> = {
       excludePropertyIds: args.excludePropertyIds ?? [],
-      valueOverrides: (args.valueChanges ?? []).map((c) => ({ propertyId: c.propertyId, newValueInr: toInr(c.newValue) })),
-      rentOverrides: (args.rentChanges ?? []).map((c) => ({ propertyId: c.propertyId, newAnnualRentInr: toInr(c.newAnnualRent) })),
+      valueOverrides: (args.valueChanges ?? []).map((c) => ({
+        propertyId: c.propertyId,
+        newValueInr: c.newValue ? toInr(c.newValue) : resolvePercent(portfolio, c.propertyId, "currentValueInr", c.changePct!),
+      })),
+      rentOverrides: (args.rentChanges ?? []).map((c) => ({
+        propertyId: c.propertyId,
+        newAnnualRentInr: c.newAnnualRent ? toInr(c.newAnnualRent) : resolvePercent(portfolio, c.propertyId, "annualRentInr", c.changePct!),
+      })),
       additions: (args.additions ?? []).map((a) => ({
         assetClass: a.assetClass,
         city: a.city,
@@ -262,13 +299,20 @@ const scenarioTool = defineTool({
       };
     }
 
-    const r = runScenario(await activePortfolio(ctx), input);
+    const r = runScenario(portfolio, input);
     ctx.state.activeScenario = scenarioInputSchema.parse(input);
     ctx.events.hypothetical = true;
     return {
       hypothetical: true,
       notice: "HYPOTHETICAL — the real portfolio is unchanged. Label this clearly in the reply.",
       changes: r.description,
+      propertyChanges: r.propertyChanges.map((c) => ({
+        propertyId: c.propertyId,
+        field: c.field,
+        before: formatInr(c.beforeInr),
+        after: formatInr(c.afterInr),
+        change: fmtDelta(c.deltaInr),
+      })),
       baseline: presentSummaryBrief(r.baseline),
       scenario: presentSummaryBrief(r.scenario),
       deltas: {

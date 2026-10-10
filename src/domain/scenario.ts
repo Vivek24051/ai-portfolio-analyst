@@ -37,9 +37,28 @@ export type ScenarioInput = z.input<typeof scenarioInputSchema>;
 
 export class ScenarioError extends Error {}
 
+/**
+ * A percentage change applied to a figure in whole INR, rounded to the nearest rupee.
+ * Integer-first (base × (100 + pct) / 100) so e.g. ₹72 L + 10% is exactly ₹79.2 L.
+ */
+export function applyPercentChange(baseInr: number, pct: number): number {
+  if (!Number.isFinite(pct) || pct < -100) throw new ScenarioError("A percentage change must be a number of at least -100%.");
+  return Math.round((baseInr * (100 + pct)) / 100);
+}
+
+export interface ScenarioPropertyChange {
+  propertyId: string;
+  field: "value" | "annualRent";
+  beforeInr: number;
+  afterInr: number;
+  deltaInr: number;
+}
+
 export interface ScenarioResult {
   hypothetical: true;
   description: string[];
+  /** Per-property before/after for every value or rent override (real figures → hypothetical). */
+  propertyChanges: ScenarioPropertyChange[];
   baseline: PortfolioSummary;
   scenario: PortfolioSummary;
   deltas: {
@@ -81,6 +100,7 @@ export function runScenario(properties: Property[], rawInput: ScenarioInput): Sc
   }
 
   const description: string[] = [];
+  const propertyChanges: ScenarioPropertyChange[] = [];
   // structuredClone guarantees the real records are never mutated.
   let working: Property[] = structuredClone(properties);
 
@@ -91,11 +111,25 @@ export function runScenario(properties: Property[], rawInput: ScenarioInput): Sc
   for (const o of input.valueOverrides) {
     const p = working.find((w) => w.id === o.propertyId)!;
     description.push(`${p.id} value ${formatInr(p.currentValueInr)} → ${formatInr(o.newValueInr)}`);
+    propertyChanges.push({
+      propertyId: p.id,
+      field: "value",
+      beforeInr: p.currentValueInr,
+      afterInr: o.newValueInr,
+      deltaInr: o.newValueInr - p.currentValueInr,
+    });
     p.currentValueInr = o.newValueInr;
   }
   for (const o of input.rentOverrides) {
     const p = working.find((w) => w.id === o.propertyId)!;
     description.push(`${p.id} annual rent ${formatInr(p.annualRentInr)} → ${formatInr(o.newAnnualRentInr)}`);
+    propertyChanges.push({
+      propertyId: p.id,
+      field: "annualRent",
+      beforeInr: p.annualRentInr,
+      afterInr: o.newAnnualRentInr,
+      deltaInr: o.newAnnualRentInr - p.annualRentInr,
+    });
     p.annualRentInr = o.newAnnualRentInr;
   }
   input.additions.forEach((a, i) => {
@@ -136,6 +170,7 @@ export function runScenario(properties: Property[], rawInput: ScenarioInput): Sc
   return {
     hypothetical: true,
     description,
+    propertyChanges,
     baseline,
     scenario,
     deltas: {

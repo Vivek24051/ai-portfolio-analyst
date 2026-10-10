@@ -77,6 +77,8 @@ describe("read tools", () => {
   it("portfolio_analytics with a filter reports the subset's share of the whole", async () => {
     const r = await run(ctxFor("U002"), "portfolio_analytics", { filter: { city: "Mumbai" }, sections: ["totals"] });
     expect(r.json).toMatchObject({ scope: "filtered: 2 of 3 properties", shareOfWholePortfolioValue: "59.59%" });
+    // The whole-portfolio total is reported alongside, so "X of your ₹Y" needs no model arithmetic.
+    expect(r.json.wholePortfolio).toEqual({ properties: 3, totalValue: expect.stringMatching(/^₹[\d.]+ Cr$/) });
   });
 
   it("compare_groups: U004 residential vs commercial", async () => {
@@ -115,6 +117,34 @@ describe("scenario tool", () => {
       valueChanges: [{ propertyId: "P003", newValue: { amount: 10, unit: "CRORE" } }],
     });
     expect(extended.json.scenario.totals.totalValue).toBe("₹18.5 Cr");
+  });
+
+  it("changePct is computed by the backend from the real figure; real data untouched", async () => {
+    const stores = freshStores();
+    const ctx = ctxFor("U001", stores);
+    const r = await run(ctx, "run_scenario", { rentChanges: [{ propertyId: "P001", changePct: 10 }] });
+    expect(r.ok).toBe(true);
+    expect(r.json.propertyChanges).toEqual([{ propertyId: "P001", field: "annualRent", before: "₹72 L", after: "₹79.2 L", change: "+₹7.2 L" }]);
+    expect(r.json.deltas.annualRent).toBe("+₹7.2 L");
+    expect(ctx.state.activeScenario?.rentOverrides).toEqual([{ propertyId: "P001", newAnnualRentInr: 7_920_000 }]);
+    const value = await run(ctx, "run_scenario", { valueChanges: [{ propertyId: "P002", changePct: -10 }] });
+    expect(value.json.propertyChanges[0]).toMatchObject({ before: "₹8.5 Cr", after: "₹7.65 Cr", change: "-₹85 L" });
+    expect(stores.state.properties.find((p) => p.id === "P001")!.annualRentInr).toBe(7_200_000);
+    expect(stores.state.properties.find((p) => p.id === "P002")!.currentValueInr).toBe(85_000_000);
+    expect(stores.state.pendingActions).toHaveLength(0);
+  });
+
+  it("each change needs exactly one of an amount or changePct; other users' ids are not found", async () => {
+    const both = await run(ctxFor("U001"), "run_scenario", {
+      rentChanges: [{ propertyId: "P001", newAnnualRent: { amount: 80, unit: "LAKH" }, changePct: 10 }],
+    });
+    expect(both.json.error).toBe("invalid_arguments");
+    const neither = await run(ctxFor("U001"), "run_scenario", { rentChanges: [{ propertyId: "P001" }] });
+    expect(neither.json.error).toBe("invalid_arguments");
+    const valueToZero = await run(ctxFor("U001"), "run_scenario", { valueChanges: [{ propertyId: "P001", changePct: -100 }] });
+    expect(valueToZero.json.error).toBe("invalid_arguments");
+    const other = await run(ctxFor("U001"), "run_scenario", { rentChanges: [{ propertyId: "P004", changePct: 10 }] });
+    expect(other.json).toEqual({ error: "invalid_scenario", message: "Property not found in this portfolio: P004" });
   });
 
   it("basedOn active_scenario without one is a clear error", async () => {

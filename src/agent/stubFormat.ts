@@ -6,6 +6,16 @@ type Json = Record<string, any>;
 
 const LABEL = "[dev stub — template reply, no LLM]";
 
+/** Questions about gains over time. The data has no purchase dates, so these get an honest "can't". */
+export const APPRECIATION_QUESTION =
+  /apprecia|roi|return on (my )?invest|capital gain|since (i |we )?(bought|purchas)|purchase price|(gain(ed)?|profit) since/i;
+
+/** What the stub knows about the turn besides the tool output: the question and the call's arguments. */
+export interface StubFormatHint {
+  question?: string;
+  args?: Json;
+}
+
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function propertyLine(p: Json): string {
@@ -20,6 +30,48 @@ function propertyLine(p: Json): string {
 
 function bucketLines(buckets: Json[] | undefined): string[] {
   return (buckets ?? []).map((b) => `- ${b.group}: **${b.value}** (${b.shareOfValue}) · ${plural(b.count, "property", "properties")}`);
+}
+
+const SUBSET_LABELS: Record<string, string> = { RETAIL: "Retail", OFFICE: "Office", RESIDENTIAL: "Residential" };
+
+function subsetLabel(args: Json | undefined): string {
+  const f = args?.filter ?? {};
+  if (f.sector === "COMMERCIAL") return "Commercial (retail + office)";
+  if (f.sector === "RESIDENTIAL") return "Residential";
+  const classes: string[] = f.assetClasses ?? [];
+  return classes.length ? classes.map((c) => SUBSET_LABELS[c] ?? c).join(" + ") : "That part of your portfolio";
+}
+
+/** "How much of my portfolio is retail?": the slice, the whole and the share, all from one tool result. */
+function formatShare(r: Json, args: Json | undefined): string {
+  const t = r.totals;
+  const whole = r.wholePortfolio;
+  const label = subsetLabel(args);
+  if (!t.properties) {
+    return `You have no ${label.toLowerCase()} properties, so they are **${r.shareOfWholePortfolioValue}** of your **${whole.totalValue}** portfolio.`;
+  }
+  const lines = [
+    `**${label} is ${r.shareOfWholePortfolioValue} of your portfolio by value**: **${t.totalValue}** out of a total **${whole.totalValue}**, ` +
+      `across **${t.properties} of your ${plural(whole.properties, "property", "properties")}**.`,
+  ];
+  if (t.annualRent) {
+    const y = t.grossYieldAllProperties ? ` (gross yield ${t.grossYieldAllProperties})` : "";
+    lines.push(`${t.properties === 1 ? "It earns" : "Together they earn"} **${t.annualRent}** a year in rent${y}.`);
+  }
+  return lines.join(" ");
+}
+
+/** Appreciation / ROI: say plainly that it can't be calculated and why; current value is context only. */
+function formatAppreciation(r: Json): string {
+  const gaps: string[] = Array.isArray(r.dataGaps) ? r.dataGaps : [];
+  const parts = [
+    "**I can't calculate your portfolio's appreciation or ROI.** The data it needs isn't recorded, and I won't estimate it:",
+    gaps.length ? gaps.map((g) => `- ${g}`).join("\n") : "- No purchase prices or purchase dates are recorded.",
+  ];
+  if (r.totals) {
+    parts.push(`For context only (this is today's estimate, not a gain): your ${plural(r.totals.properties, "property is", "properties are")} currently valued at **${r.totals.totalValue}**.`);
+  }
+  return parts.join("\n\n");
 }
 
 function formatAnalytics(r: Json): string {
@@ -50,11 +102,38 @@ function formatAnalytics(r: Json): string {
   return parts.join("\n\n");
 }
 
+const RANK_FIELDS: Record<string, { field: string; label: string; suffix: string }> = {
+  rent: { field: "annualRent", label: "annual rent", suffix: " a year" },
+  yield: { field: "grossYield", label: "gross yield", suffix: "" },
+  value: { field: "value", label: "value", suffix: "" },
+};
+
+/** One-sentence answer on top of a ranking ("P001 earns more annual rent: ₹72 L a year, vs ₹60 L a year for P003."). */
+function rankingHeadline(r: Json, props: Json[]): string | null {
+  const m = RANK_FIELDS[String(r.rankedBy).split(" ")[0]!];
+  if (!m) return null;
+  const lowest = String(r.rankedBy).includes("lowest");
+  const fig = (p: Json) => `${p[m.field]}${m.suffix}`;
+  const [a, b] = props;
+  if (!a) return null;
+  if (r.topIsTied) {
+    const tied = props.filter((p) => p.rank === a.rank).map((p) => `**${p.id}**`);
+    return `${tied.join(" and ")} tie for the ${lowest ? "lowest" : "highest"} ${m.label}: **${fig(a)}** each.`;
+  }
+  if (props.length === 2 && b) {
+    const verb = m.field === "annualRent" ? (lowest ? "earns less annual rent" : "earns more annual rent") : `has the ${lowest ? "lower" : "higher"} ${m.label}`;
+    return `**${a.id}** ${verb}: **${fig(a)}**, vs ${fig(b)} for ${b.id}.`;
+  }
+  return `**${a.id}** has the ${lowest ? "lowest" : "highest"} ${m.label}: **${fig(a)}**.`;
+}
+
 function formatSearch(r: Json): string {
   const props: Json[] = r.properties ?? [];
   if (props.length === 0) return "No properties in your portfolio match that.";
   const parts: string[] = [];
   if (r.rankedBy) {
+    const headline = rankingHeadline(r, props);
+    if (headline) parts.push(headline);
     parts.push(`Ranked by ${r.rankedBy}${r.topIsTied ? " — **tie for first place**" : ""}:`);
   } else {
     parts.push(`Found **${plural(r.matchCount ?? props.length, "property", "properties")}**:`);
@@ -65,8 +144,37 @@ function formatSearch(r: Json): string {
   return parts.join("\n\n");
 }
 
+const unchanged = (delta: string | null | undefined) => !delta || delta === "₹0" || delta === "0 pp";
+
+/** What-if: per-property before → after, then the portfolio totals, always labelled hypothetical. */
+function formatScenario(r: Json): string | null {
+  if (!r.hypothetical || !r.baseline?.totals || !r.scenario?.totals) return null;
+  const parts = ["**Hypothetical — nothing is saved; your real portfolio is unchanged.**"];
+  const lines: string[] = (r.propertyChanges ?? []).map(
+    (c: Json) =>
+      `- ${c.propertyId} ${c.field === "annualRent" ? "annual rent" : "value"}: ${c.before} → **${c.after}**${c.field === "annualRent" ? " a year" : ""} (${c.change})`,
+  );
+  for (const d of (r.changes ?? []) as string[]) if (d.startsWith("Excluded") || d.startsWith("Added")) lines.push(`- ${d}`);
+  if (lines.length) parts.push(lines.join("\n"));
+
+  const b = r.baseline.totals;
+  const s = r.scenario.totals;
+  const row = (label: string, before: string, after: string, delta: string | null) =>
+    `- ${label}: ${before} → **${after}** (${unchanged(delta) ? "unchanged" : delta})`;
+  parts.push(
+    "**Portfolio effect**",
+    [
+      row("Annual rent", b.annualRent, s.annualRent, r.deltas?.annualRent),
+      row("Total value", b.totalValue, s.totalValue, r.deltas?.totalValue),
+      ...(b.grossYieldAllProperties && s.grossYieldAllProperties ? [row("Gross yield", b.grossYieldAllProperties, s.grossYieldAllProperties, r.deltas?.grossYield)] : []),
+    ].join("\n"),
+  );
+  parts.push("To make a real change, ask me to update the property; I'll show the change and wait for your confirmation.");
+  return parts.join("\n\n");
+}
+
 /** Turns one tool result into readable text; falls back to a short notice for unknown shapes. */
-export function formatToolResultForStub(toolName: string | undefined, content: string): string {
+export function formatToolResultForStub(toolName: string | undefined, content: string, hint: StubFormatHint = {}): string {
   let r: Json;
   try {
     r = JSON.parse(content) as Json;
@@ -74,9 +182,13 @@ export function formatToolResultForStub(toolName: string | undefined, content: s
     return `${LABEL}\n\nThe tool returned an unexpected result.`;
   }
   let body: string;
-  if (typeof r.error === "string") body = `That lookup didn't work (${r.error}). Try rephrasing.`;
+  // Scenario messages only echo the ids the user typed ("not found in this portfolio"), so they are safe to show.
+  if (r.error === "invalid_scenario" && typeof r.message === "string") body = `I couldn't run that what-if: ${r.message}.`;
+  else if (typeof r.error === "string") body = `That lookup didn't work (${r.error}). Try rephrasing.`;
+  else if (toolName === "portfolio_analytics" && APPRECIATION_QUESTION.test(hint.question ?? "")) body = formatAppreciation(r);
+  else if (toolName === "portfolio_analytics" && r.wholePortfolio && r.totals) body = formatShare(r, hint.args);
   else if (toolName === "portfolio_analytics") body = formatAnalytics(r);
   else if (toolName === "search_properties") body = formatSearch(r);
-  else body = `The ${toolName ?? "tool"} step finished.`;
+  else body = (toolName === "run_scenario" ? formatScenario(r) : null) ?? `The ${toolName ?? "tool"} step finished.`;
   return `${LABEL}\n\n${body}`;
 }
