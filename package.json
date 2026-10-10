@@ -25,7 +25,8 @@
     "eval:stub": "tsx eval/run.ts --mode dev-stub",
     "bench": "tsx eval/bench.ts",
     "bench:http": "tsx eval/httpBench.ts",
-    "eval:perturbed": "tsx eval/run.ts --mode perturbed"
+    "eval:perturbed": "tsx eval/run.ts --mode perturbed",
+    "test:db": "vitest run --config vitest.db.config.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
