@@ -51,7 +51,13 @@ function chunkText(chunk: AIMessageChunk): string {
  * OpenRouter via the OpenAI-compatible API.
  * NOT exercised by any test (no paid calls yet) — verified only by type-checking.
  */
-export function createOpenRouterModel(modelId: string, apiKey: string): ChatModel {
+export interface OpenRouterOptions {
+  /** Injected fetch — used by tests to replay synthetic OpenRouter responses without network access. */
+  fetch?: typeof fetch;
+  baseURL?: string;
+}
+
+export function createOpenRouterModel(modelId: string, apiKey: string, options: OpenRouterOptions = {}): ChatModel {
   const client = new ChatOpenAI({
     model: modelId,
     apiKey,
@@ -62,7 +68,8 @@ export function createOpenRouterModel(modelId: string, apiKey: string): ChatMode
     // Ask OpenRouter to include usage accounting (tokens + cost) in responses.
     modelKwargs: { usage: { include: true } },
     configuration: {
-      baseURL: OPENROUTER_BASE_URL,
+      baseURL: options.baseURL ?? OPENROUTER_BASE_URL,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
       defaultHeaders: { "X-Title": "AI Real Estate Portfolio Analyst" },
     },
   });
@@ -112,6 +119,12 @@ export function extractCostUsd(message: AIMessage): number | null {
 
 /** Redacted, length-capped error text (provider errors can echo request details). */
 const describe = (e: unknown) => safeErrorMessage(e, 300);
+
+/** HTTP 401 (invalid key) / 402 (insufficient credits): retrying on another model cannot help. */
+export function isAccountError(e: unknown): boolean {
+  const status = (e as { status?: unknown } | null)?.status;
+  return status === 401 || status === 402;
+}
 
 export interface StreamHooks {
   onDelta(text: string): void;
@@ -194,6 +207,11 @@ export async function invokeWithFallback(
         completionTokens: null,
         costUsd: null,
       });
+      // Bad key / no credits fail identically on the fallback (same key, same account): stop here.
+      if (isAccountError(e)) {
+        causes.push("fallback skipped: account-level error (same key/credits)");
+        break;
+      }
     } finally {
       deadline.clear();
     }
