@@ -68,7 +68,7 @@ With a zero-delay stub the whole turn finishes in about 7 ms, so all SSE events 
 
 Golden set: **40 cases, 50 turns** across 9 categories (§3). The scores validate the harness and graders, not a model:
 
-| Metric | Oracle (positive control) | Perturbed oracle (negative control: figures) | Dev stub (negative control: behaviour) |
+| Metric | Oracle (positive control) | Perturbed oracle (negative control: figures) | Dev stub, historical (commit `76a9571`, when it was the negative control) |
 |---|---|---|---|
 | Cases fully passed | **40/40** | 12/40 | 17/40 |
 | Tool selection | 42/42 | 42/42 | 22/42 |
@@ -82,18 +82,24 @@ Golden set: **40 cases, 50 turns** across 9 categories (§3). The scores validat
 
 \* The dev stub copies figures verbatim from tool output (first as raw JSON, then through fixed reply templates; the scores were identical both ways), so its numbers trivially trace to tool output. This is why a separate figure-perturbing control is needed.
 
-**The dev-stub column is historical** (stub at commit `76a9571`). The stub has since been extended with share questions, follow-ups on the previous result, percentage what-ifs, an explicit appreciation answer and propose → confirm property updates. A re-run on the current working tree (2026-10-10 UTC, [docs/eval/dev-stub.md](docs/eval/dev-stub.md)) gave:
-- cases: 23/40;
-- tool selection: 30/42;
-- argument accuracy: 11/20;
-- expected figures: 15/23;
-- numeric faithfulness: 35/35;
-- clarification: 2/7;
-- proposals: 13/14;
-- hypothetical labelling: 3/5;
-- **safety violations: 0**.
+**The dev-stub column is historical** (stub at commit `76a9571`).
 
-The first deployed version (`fe57eb4`) measured 20/40. An intermediate version before that measured 8 safety flags and 16 unsupported figures, all from help text containing example ids and percentages, and misrouted "best rental yield" as a rent ranking. Both were fixed before `fe57eb4`. The stub is still a keyword router and remains a negative control; the oracle and perturbed columns are unaffected.
+**Later stub results** (offline, `npm run eval:stub`; history in [docs/eval/dev-stub.md](docs/eval/dev-stub.md)):
+
+| Stub version | Cases | Faithfulness | Clarification | Safety |
+|---|---|---|---|---|
+| `fe57eb4` (first deployment) | 20/40 | 33/33 | 2/7 | 0 |
+| `5996dba` (live deployment) | 23/40 | 35/35 | 2/7 | 0 |
+| Current working tree, 2026-10-10 UTC | **40/40** | 37/37 | 7/7 | **0** |
+
+The current tree also scores tool selection 42/42, arguments 20/20, expected figures 23/23, proposals 14/14 and hypothetical labelling 5/5.
+
+**Read the 40/40 with care.**
+- The stub's patterns were written while looking at the golden set's wording, so **it no longer works as a negative control**.
+- It does not show that the stub generalises, and it is not a measure of LLM quality.
+- What it does show: the tools, safeguards and templates handle all 40 scenarios, and no grader check got worse than in any earlier run (compared check by check on the raw results).
+- The perturbed oracle remains the control for made-up figures.
+- An earlier intermediate version measured 8 safety flags and 16 unsupported figures, from help text containing example ids, and misrouted "best rental yield". Both were caught by this evaluation and fixed (DECISIONS D54).
 
 The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or % figure, so there was nothing to falsify. That's correct behaviour, not a gap in the check.
 
@@ -185,13 +191,17 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 
 ## 5. Real-model evaluation: intentionally not performed (free-only scope)
 
-This submission is deliberately **free**. No test, evaluation script, or benchmark calls an LLM endpoint, and none is needed to build, test, or run the app.
+This submission is deliberately **free**.
+- No test, evaluation script or benchmark calls an LLM endpoint, and none is needed to build, test or run the app.
+- The live demo runs `LLM_PROVIDER=stub`.
+- The mixed-provider fallback chain (Gemini → OpenRouter `:free` → stub) is tested **offline with scripted models only**.
+- Its behaviour against live providers, including their real 429/401/402 responses, has not been observed.
 
 **Gemini (free tier) is supported and was checked manually.** One manual chat turn ("What does my portfolio look like?" as U001) returned correct figures from the portfolio tool and stated the purchase-price gap honestly. No latency, token, cost, or accuracy figures were recorded for Gemini, so none are reported here. The 40-case evaluation was not run against it; doing so would need a Gemini mode in the runner and would consume a few hundred free-tier requests.
 
 What exists, so a real-model run could be added later without code changes:
 - `npm run eval -- --mode openrouter` replays the same 40 golden cases and graders against a real model.
-- It **refuses to start** unless `EVAL_ALLOW_PAID=1`, `--confirm-paid`, `OPENROUTER_API_KEY`, `LLM_PRIMARY_MODEL`, `--max-calls`, and `--max-cost-usd` are all set. It then stops at whichever cap it reaches first. These guards are unit-tested in `tests/eval.test.ts`, with no network.
+- It **refuses to start** unless `EVAL_ALLOW_PAID=1`, `--confirm-paid`, `OPENROUTER_API_KEY`, `LLM_PRIMARY_MODEL`, `--max-calls`, and `--max-cost-usd` are all set, **and** the model id ends in `:free`. A paid id needs the separate `OPENROUTER_ALLOW_PAID=true` opt-in, which is off by default; the rule is the app's own, re-checked before the client is built. It then stops at whichever cap it reaches first. These guards are unit-tested in `tests/eval.test.ts`, with no network. **It has never been run.**
 - The request shape, response parsing, streaming, usage and cost extraction, timeouts, and fallback were verified offline against synthetic OpenRouter payloads (`tests/openrouter.test.ts`).
 
 The **workload** of such a run is known from offline measurement (§2.4): one pass makes about 95 model calls under the oracle policy, more with a real model, at about 4.7k input tokens per call. Prices, latency, and quality are **not** known and are not estimated here.
@@ -201,11 +211,13 @@ The **workload** of such a run is known from offline measurement (§2.4): one pa
 | Measurement | Needs | Status |
 |---|---|---|
 | Real model latency, time to first token, tokens, and cost per turn | A real LLM (Gemini free tier is connectable) | Not measured. Gemini was only exercised manually |
+| Real tool calling on a free OpenRouter model; whether a given `:free` model is available and supports tools | OpenRouter (no credits) | Not verified; the guard checks only the id suffix |
+| Fallback-chain behaviour against live 429 / 401 / 402 and latency of a fallback hop | Real providers | Not measured; tested with scripted models only |
 | Real tool-selection, argument, faithfulness, and clarification accuracy | A real LLM | Not measured. The golden set has not been run against Gemini |
 | Whether live OpenRouter responses carry `usage.cost` where we read it | A real LLM via OpenRouter | Verified only on synthetic payloads |
 | Correctness of the Prisma store, migration, and seed | A Postgres database | **Verified** with `npm run test:db` (14/14) on a local PostgreSQL 16 test database (Docker) |
-| PostgreSQL latency for context load and persist; a hosted or pooled database (e.g. Neon) | A hosted database | Not measured or tested |
-| Latency over the internet and from a deployment region | A deployment | Not performed (no deployment) |
+| PostgreSQL latency for context load and persist; a hosted or pooled database (e.g. Neon) | A hosted database | Not measured. The live app runs on Neon and was checked by hand, with no automated suite or timing |
+| Latency over the internet and from a deployment region | A deployment | Not measured. The app is deployed (Vercel, stub mode), but no latency was recorded beyond one admin dashboard reading of a single stub turn |
 | Behaviour under concurrent load | A load test | Not performed (single sequential client only) |
 
 ## 7. Scaling: what changes at significantly higher volume

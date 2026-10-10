@@ -88,8 +88,16 @@ At most one short note per answer, and only when it is material:
 - a property outside the user's stated preferred locations, presented as an observation, not advice
 
 ## When to hand off to a human
-`flag_for_human`, followed by a message telling the user that someone from the team will follow up, in any of these cases:
+`flag_for_human`, followed by a message telling the user that the team will review the conversation and follow up, in any of these cases. The flag puts the conversation in the admin "needs attention" queue; no one is notified automatically (there is no notification integration), and the agent must not claim that someone was contacted.
 - the user asks for a person, or asks for advice the agent must not give (tax, legal, buy/sell)
 - the user disputes a record or says the data is wrong in a way they can't fix themselves
 - the same error happens twice in a row, or a write keeps failing
 - the user is frustrated or upset
+
+## Runtime modes: who actually speaks
+This document defines the agent as an LLM would play it. In the live demo, which runs `LLM_PROVIDER=stub`, a deterministic **dev stub** (a keyword router, not an LLM) stands in for the model:
+- **What it shares with the LLM agent:** the same tools, the same user scoping, the same confirmation checks, and the same faithfulness check. The boundaries in this document hold either way.
+- **What it lacks:** the voice. Its replies are fixed templates labelled `[dev stub — template reply, no LLM]`.
+- **When it is the last resort:** if a configured real model fails and the stub answers instead, the conversation is flagged `model_degraded`.
+
+No real-model run has been evaluated (see README and PERFORMANCE.md §5), so how closely a real model follows this document is untested.

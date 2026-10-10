@@ -2,6 +2,20 @@
 
 Each entry: decision, why, trade-off. Labels: **[fact]** comes from the brief or data; **[assumption]** is my interpretation.
 
+## Start here: the decisions that matter most
+
+| Area | Decisions |
+|---|---|
+| Agent and orchestration | D1 (single tool-calling agent), D2 (LangGraph), D16 (our code executes tools), D19 (5-round budget) |
+| Data and retrieval | D3 (PostgreSQL and SQL, no vector search), D13 (user scoping in the persistence layer), D22 (memory: bounded transcript plus structured state) |
+| Correct numbers | D4, D5 (the LLM never does arithmetic), D18 (pre-formatted tool output), D44 (numeric faithfulness checked in production) |
+| Dataset judgement calls | D6 (type normalisation; COMMERCIAL = retail + office), D7 (location), D8 (missing purchase prices and dates are reported, never guessed) |
+| Safe writes | D11 (propose → confirm), D12 (near-duplicates), D17 (no identity in tool arguments), D25 (Confirm skips the LLM) |
+| Failures and model routing | D20 (timeouts), D21, D40, D46, D57 (fallback chain, circuit breaker, free-only guard), D23 (honest failure replies) |
+| Observability and the business view | D34–D38 (admin auth, attention flags, nulls for unreported metrics), D41 (redaction) |
+| Evaluation honesty | D42, D43 (golden set and controls), D47 (benchmarks keep their conditions), D56 (the stub is no longer a negative control) |
+| Cost | D24, D49, D52 (stub default, free Gemini tier, `LLM_PROVIDER=stub` builds no client) |
+
 ## D1. A single tool-calling agent, no multi-agent setup
 Every capability works on one user's small, structured portfolio. A router agent plus specialist agents would add an extra LLM hop per turn (latency and cost) and more handoff failure points, with no gain in accuracy.
 **Trade-off:** the single agent's prompt and tool list must stay small and well described. Revisit if the number of tools grows beyond about 10–12.
@@ -267,6 +281,11 @@ No paid calls were made. The real `ChatOpenAI` client runs against a fake `fetch
 ## D46. No fallback on 401/402
 An invalid key or exhausted credits fail identically on the fallback model, because it's the same key and the same account. Retrying would add a wasted round trip and could mislead the error log, so the turn ends with a clear error instead.
 
+> **Revised by D57 (2026-10-11):**
+> - The rule still holds for the **same provider**: a 401/402 is never retried there.
+> - A fallback on a **different, labelled** provider (separate key and account) is still tried, and so is the dev stub last resort.
+> - A model whose provider is unknown is treated as the same account.
+
 ## D47. Benchmarks keep their conditions attached
 In-process (mock model), HTTP (local `next start`, dev stub), and eval-runner timings are reported separately, each with machine, workload, and conditions. Eval-runner "model" time includes the token-estimation wrapper and is not used as a latency figure.
 
@@ -396,3 +415,50 @@ On the deployed stub, "Update P001's annual rent to ₹80 lakh per year" got the
 G2's clarification pass at `fe57eb4` had been incidental (the help text contained a "?"). It now passes because the stub asks a real question. None of this was exercised with Gemini or OpenRouter.
 
 **Trade-off:** update parsing is still pattern-based. It covers one property and one field per message, with an absolute amount; adding properties and percentage-based real changes are left to a real model.
+
+## D56. The stub now covers every golden-set scenario — and is no longer a negative control (2026-10-11)
+The deployed demo runs on the keyword stub, so its gaps were what visitors met. The stub was extended to cover the remaining golden-set cases. Each extension routes to an **existing** tool, and the backend still computes every figure:
+- read-only filters and rankings: value thresholds, lowest rent, occupancy;
+- totals and comparisons: overall yield, "combined value", `compare_groups`, the mix change in what-ifs;
+- what-ifs: an absolute value, a hypothetical purchase, a described property;
+- new properties through `propose_new_property`: `needs_info` questions, multi-turn drafts, the backend's duplicate check;
+- status changes: the backend's rent rule becomes a question;
+- hand-off through `flag_for_human`.
+
+Every write still needs an explicit "yes" through `confirm_pending_action`.
+
+**Measured offline:** `npm run eval:stub` gave 40/40 cases, 0 safety violations, and numeric faithfulness 37/37. Compared check by check on the raw results against every earlier run, no check got worse. Every clarification pass is a real question; none relies on the grader's "?" quirk.
+
+**Caveat, recorded deliberately:** the patterns were written while looking at the golden set's own wording.
+- 40/40 shows the tools, safeguards and templates handle these scenarios.
+- It does **not** show that the stub generalises to other phrasing, and it says nothing about LLM quality.
+- The stub therefore **no longer works as a negative control**; the perturbed oracle remains the control for made-up figures.
+- An honest test of language understanding needs a real model on held-out phrasing, which hasn't been done.
+
+## D57. Mixed-provider fallback chain with a free-only guard (2026-10-11)
+**Chain:** primary → fallback → labelled dev stub (last resort).
+- The fallback may use a different provider (`LLM_FALLBACK_PROVIDER`), so a free Gemini primary can fall back to an OpenRouter `:free` model.
+- `LLM_PROVIDER=stub` remains the safe default: it builds no client.
+- `.env.example` now defaults to `stub`.
+
+**Rules (all covered by offline tests with scripted models; a `fetch` spy fails on any network attempt):**
+- **Account errors:** a 401/402 blocks only the **same** provider (same key and credits) and is never retried there. A different, labelled provider is still tried, and an unknown provider counts as the same account (D46, revised).
+- **Per-turn circuit breaker:** generalised from "the primary failed" to every model that failed this turn. The last link is always tried.
+- **Last resort:** a stub answer keeps its `[dev stub …]` label, sets `fallbackUsed`, records `lastResort` and the provider per LLM call (optional JSON fields; no migration), shows a "stub last resort" badge in the admin trace, and flags the conversation `model_degraded`, so an outage cannot hide.
+- **Free-only:**
+  - OpenRouter ids must end in `:free` unless `OPENROUTER_ALLOW_PAID=true`, which is off by default; only `true`/`1` enables it.
+  - A refused id is treated as "not configured", never as a reason to fall through to something paid.
+  - The same rule (one shared function in `src/agent/config.ts`) is enforced by the evaluation runner's real-model mode, on top of its existing opt-ins and spend caps, and re-checked right before the client is built.
+- **No secrets in output:** warnings never echo configuration values; the startup log lists model ids only (redacted); provider errors are redacted before storage.
+
+**Not verified (no real calls were made):**
+- whether any particular model is free, available, or supports tool calling;
+- real-model latency;
+- the behaviour of the chain against live 429s.
+
+The guard checks only the id suffix. Gemini has no equivalent in code: it stays free only if billing is disabled on its Google project.
+
+**Fixed (2026-10-11): same-provider retry across tool rounds.**
+- **The bug:** a same-provider fallback *skipped* after the primary's 401/402 was not recorded in the turn's circuit breaker. If the stub's last-resort answer then called a tool, the next round called that fallback once, with the same key.
+- **The fix:** skipped models are now added to `failedModelIds`, so the rest of the turn skips them too.
+- **The test:** a two-round test in `tests/providerFallback.test.ts` (scripted models only) reproduced the bug before the fix and passes after it.

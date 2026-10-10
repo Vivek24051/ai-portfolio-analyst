@@ -1,13 +1,21 @@
 # Deployment readiness (Vercel Hobby + free PostgreSQL)
 
-> **Status:** not deployed. Nothing on this page has been checked against live provider documentation or accounts. Every provider limit below must be verified manually before acting on it.
+> **Status: deployed in stub mode** at https://ai-portfolio-analyst-two.vercel.app (Vercel + Neon), `LLM_PROVIDER=stub`.
+>
+> **Checked by hand on the live site by the owner:**
+> - `model: dev-stub` and `data: prisma` in the admin header;
+> - chat, admin login and the conversation list work;
+> - conversations are stored in Neon;
+> - the retail-share, missing-ROI-data and update → confirm/cancel flows (commit `5996dba`).
+>
+> There is **no automated test against the deployment**. Later commits and the current working tree are **not deployed**. Provider limits on this page (Vercel, Neon, Gemini, OpenRouter) have **not** been checked against live documentation or accounts.
 
 ## Blockers
 
 | # | Blocker | Status |
 |---|---|---|
 | B1 | Storage defaults to in-memory unless `DATA_BACKEND=prisma`. On serverless, each instance would have its own data, which resets on cold start. | Set `DATA_BACKEND=prisma` in the deployment environment. |
-| B2 | The Prisma store, migration, and seed needed verification against PostgreSQL. | **Resolved locally:** `npm run test:db` passed 14/14 on a local PostgreSQL 16 test database (Docker). **Hosted PostgreSQL compatibility and permissions are unverified.** Still to do: run it against a separate **test** branch or database at the hosting provider before going live (see the note on privileges below). |
+| B2 | The Prisma store, migration, and seed needed verification against PostgreSQL. | **Resolved locally:** `npm run test:db` passed 14/14 on a local PostgreSQL 16 test database (Docker). **Hosted PostgreSQL compatibility and permissions are unverified.** The app itself now runs on Neon (checked by hand), but `npm run test:db` has **not** been run against a hosted test branch or database (see the note on privileges below). |
 
 ### Note: privilege-sensitive guard probes
 
@@ -40,8 +48,9 @@ These are deliberately **not** changed in code, because the right values depend 
 | `DATABASE_URL` / `DIRECT_URL` | Provider's pooled / direct connection strings |
 | `SESSION_SECRET` | New random value, ≥ 32 characters. Don't reuse the local one. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / a strong password of ≥ 12 characters |
-| `LLM_PROVIDER` | `stub` for the first deployment, so no model API can be called |
-| **Do not set** | `GEMINI_API_KEY`, `OPENROUTER_API_KEY` |
+| `LLM_PROVIDER` | `stub` (current live setting): no model client is built and no model API can be called |
+| `OPENROUTER_ALLOW_PAID` | Leave unset or `false` (default). Only `true`/`1` allows paid OpenRouter models |
+| **Do not set (stub mode)** | `GEMINI_API_KEY`, `OPENROUTER_API_KEY` |
 
 `.env.local` is git-ignored and is **not** uploaded by a Git-based deployment. Set every value above in the provider dashboard.
 
@@ -57,12 +66,33 @@ These are deliberately **not** changed in code, because the right values depend 
   - How does auto-suspend behave?
 - **Gemini, later only:** a free-tier key on a project with billing **disabled**.
 
-## Order of operations (when approved)
+## Enabling a real model later (free-only; not done)
 
-1. Create an empty local test database and run `npm run test:db` until it passes, which clears B2.
-2. Create the free database, run `npm run db:deploy` and `npm run db:seed` once from your machine with its URLs in the shell, and run `npm run test:db` against a separate **test** database or branch.
-3. Import the repository into Vercel, set the environment variables above (`LLM_PROVIDER=stub`), and add no payment method.
-4. Deploy, then smoke-test:
+This is configuration only; the code is in place and tested offline with scripted models.
+
+**Settings:**
+- `LLM_PROVIDER=gemini`, `GEMINI_API_KEY` and `LLM_PRIMARY_MODEL`: a model your AI Studio project shows free quota for.
+- Optionally `LLM_FALLBACK_PROVIDER=openrouter`, `OPENROUTER_API_KEY` and `LLM_FALLBACK_MODEL=<vendor/model>:free`.
+- `LLM_STUB_LAST_RESORT` stays `true` (the default).
+
+**Guarantees in code (offline tests):**
+- OpenRouter ids without `:free` are refused unless `OPENROUTER_ALLOW_PAID=true`.
+- A 401/402 is never retried on the same provider.
+- If every real model fails, the labelled stub answers and the conversation is flagged `model_degraded`.
+
+**Not verified:**
+- that any specific model is free, available, or supports tool calling;
+- real-model latency within `maxDuration` (R3);
+- behaviour under the free-tier rate limits.
+
+Verify these manually before switching, and keep billing disabled (Gemini) and credits at zero (OpenRouter).
+
+## Order of operations (as carried out)
+
+1. ✅ A local test database: `npm run test:db` passed (14/14).
+2. ✅ The Neon database was migrated and seeded; the app reads it. ⚠️ `npm run test:db` against a separate hosted **test** branch was **not** run.
+3. ✅ Imported into Vercel with `LLM_PROVIDER=stub` and no payment method.
+4. ✅ Deployed and smoke-tested by hand. There is no automated check, and survival across a redeploy was not separately recorded. The checks were:
    - `/api/session` reports `modelMode: "dev-stub"` and `dataBackend: "prisma"`;
    - a chat as Rahul works;
    - the conversation appears in `/admin` and survives a redeploy.

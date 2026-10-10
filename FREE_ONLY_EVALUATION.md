@@ -16,7 +16,7 @@ Optional, to stop the build tools' anonymous telemetry pings (these are free and
 ## 1. The safety net: tests, types, build
 
 ```bash
-npm test            # 368 tests, all offline; models, storage and network are mocked
+npm test            # 422 tests, all offline; models, storage and network are mocked
 npm run typecheck   # tsc --noEmit
 npm run build       # prisma generate + next build; needs no environment variables
 ```
@@ -36,7 +36,7 @@ npm run eval:stub        # writes docs/eval/dev-stub.md
 |---|---|---|---|
 | **Oracle** (positive control) | A scripted ideal agent that replays each case's reference tool calls and builds its reply only from tool output | 40/40 cases, 0 safety violations | The tools, deterministic figures, flags, proposals, hypothetical isolation, and safety checks give exactly the expected outcome for a correct agent. The expectations themselves are consistent. |
 | **Perturbed** (negative control: figures) | The oracle, with every ₹ amount +10% and every % +3 points in the reply | Numeric faithfulness about 1/34, expected figures about 1/23, while tool selection and arguments stay 100% | The number checks catch fabricated figures, independently of tool behaviour |
-| **Dev stub** (negative control: behaviour) | The keyword router used when no key is configured | Earlier stub (historical): 17/40 cases; clarification 0/7; hypothetical labelling 0/5; 0 safety violations. Stub at `fe57eb4` (historical): 20/40 cases. Current working tree with property updates (re-run 2026-10-10 UTC): 23/40 cases; numeric faithfulness 35/35; clarification 2/7; proposal / no proposal 13/14; hypothetical labelling 3/5; 0 safety violations (see `docs/eval/dev-stub.md`) | The behavioural graders catch an agent that doesn't ask, propose, or label hypotheticals |
+| **Dev stub** (was the negative control: behaviour) | The keyword router (the default, `LLM_PROVIDER=stub`) | Historical: 17/40 (`76a9571`), 20/40 (`fe57eb4`), 23/40 (`5996dba`, live deployment). Current working tree (2026-10-10 UTC): **40/40**; numeric faithfulness 37/37; clarification 7/7; 0 safety violations (see `docs/eval/dev-stub.md`) | **No longer a negative control.** Its patterns were tuned against these 40 cases, so 40/40 shows that the tools, safeguards and templates handle every scenario. It does not show that the stub generalises, and it is not LLM quality. The perturbed oracle remains the control for made-up figures |
 
 Pass/fail counts are deterministic. Timings in these reports include the offline token-estimation wrapper, so they are **not** latency figures.
 
@@ -85,4 +85,9 @@ The Prisma store and `db.ts` show 0% there because the ordinary `npm test` suite
 | Prisma store, migration, and seed against PostgreSQL | Needs a database. The opt-in suite `npm run test:db` **passed 14/14** against a local PostgreSQL 16 test database (Docker); it skips without `TEST_DATABASE_URL` (see the README section "Opt-in PostgreSQL integration tests"). A hosted or pooled database (e.g. Neon) has not been tested. |
 | Deployment, internet latency, concurrent load | No deployment; single local client only |
 
-The runner's `--mode openrouter` exists for a future real-model evaluation. It is **not** part of this free-only process and refuses to run without explicit opt-in flags (`EVAL_ALLOW_PAID=1`, `--confirm-paid`) and spend caps.
+The runner's `--mode openrouter` exists for a future real-model evaluation and **has never been run**. It is **not** part of this free-only process. It refuses to run without:
+- the explicit opt-in flags `EVAL_ALLOW_PAID=1` and `--confirm-paid`;
+- spend caps (`--max-calls`, `--max-cost-usd`);
+- an OpenRouter model id ending in `:free`.
+
+A paid id would need the separate `OPENROUTER_ALLOW_PAID=true` opt-in, which is off by default. The app's mixed-provider fallback chain (Gemini → OpenRouter `:free` → stub) is likewise covered by offline tests with scripted models only.

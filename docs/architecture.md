@@ -1,6 +1,6 @@
 # Architecture
 
-> All components below are built. See the README for what has and has not been verified against real services.
+> All components below are built. Deployed on Vercel + Neon in **stub mode** (`LLM_PROVIDER=stub`, no LLM). See the README for what has and has not been verified against real services — in particular, no real Gemini/OpenRouter call is part of any automated test.
 
 ```mermaid
 flowchart LR
@@ -16,14 +16,14 @@ flowchart LR
     Btn["POST /api/chat/actions<br/>Confirm/Cancel — no LLM"]
     Svc["chatService<br/>load history + state + portfolio<br/>turn deadline · persist · telemetry"]
     Graph["LangGraph<br/>agent ⇄ tools · max 5 rounds<br/>final no-tools call · limit node"]
-    Router["Model router<br/>primary → fallback<br/>per-call timeout"]
+    Router["Model router<br/>primary → fallback (may be another provider)<br/>→ dev stub last resort<br/>per-call timeout · per-turn circuit breaker"]
     Tools["9 tools<br/>strict zod · trusted ToolContext<br/>structured errors"]
     Domain["Domain core<br/>analytics · scenario · money<br/>normalise · location · validation"]
     Actions["Propose → confirm service"]
     Stores["User-scoped stores<br/>Prisma | in-memory"]
   end
 
-  LLM[("Gemini (free tier) · OpenRouter (paid, unused)<br/>or dev stub (no key)")]
+  LLM[("Gemini (free tier) · OpenRouter (:free ids only by default)<br/>or dev stub (default, no LLM)")]
   DB[("PostgreSQL / Neon<br/>or in-memory")]
 
   Chat --> Session
@@ -46,7 +46,7 @@ sequenceDiagram
   participant API as /api/chat
   participant S as chatService
   participant G as LangGraph
-  participant M as Model (primary/fallback)
+  participant M as Model (primary → fallback → stub)
   participant T as Tools
   participant DB as Stores
   U->>API: {message, conversationId?} + cookie
@@ -74,4 +74,9 @@ sequenceDiagram
 - **Numbers.** Every figure comes from `src/domain`. Tools return pre-formatted strings, and the prompt's property index has no numbers.
 - **Hypotheticals.** Scenarios run on a cloned portfolio and are tagged `hypothetical: true`. They have no path to the database.
 - **Writes.** Every write needs a pending action. Confirmation happens in a later turn, with either a clear yes or the button, which never calls the LLM. Writes are transactional and use optimistic locking.
-- **Bounded execution.** At most 5 tool rounds. Each model call has its own timeout and falls back once; the turn has an overall deadline. The user always gets a reply.
+- **Bounded execution.** At most 5 tool rounds. Each model call has its own timeout and the turn has an overall deadline; the user always gets a reply.
+  - **Model failures:** a failing model moves on to the fallback (which may be another provider), then to the labelled dev stub when the last resort is enabled.
+  - **Account errors:** a 401/402 is never retried on the same provider for the rest of the turn, including later tool rounds.
+  - **Per-turn circuit breaker:** a model that failed is not called again in that turn.
+  - **Visibility:** a stub last-resort answer flags the conversation `model_degraded`.
+- **Free-only by default.** `LLM_PROVIDER=stub` builds no model client. OpenRouter model ids must end in `:free` unless `OPENROUTER_ALLOW_PAID=true` (default off); the evaluation runner enforces the same rule. Keys are never logged or shown; provider errors are redacted before storage.
