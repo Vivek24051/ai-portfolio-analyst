@@ -133,3 +133,22 @@ describe("per-turn fallback circuit breaker", () => {
     expect([t1.reply, t2.reply]).toEqual(["fallback answer", "primary is back"]);
   });
 });
+
+describe("numeric faithfulness in production turns", () => {
+  it("a reply with a figure not found in tool output flags the conversation", async () => {
+    const stores = freshStores();
+    const model = scriptedModel("p", [toolCall("portfolio_analytics", { sections: ["totals"] }), text("Your portfolio is ₹31 Cr and grew 12% last year.")]);
+    const r = await handleChatTurn(chatDeps(stores, model), { userId: "U001", message: "total?" });
+    expect(r.needsAttention).toBe(true);
+    expect(stores.state.conversations[0]!.attentionReason).toBe("unsupported_numbers: ₹31 Cr, 12%");
+    expect((stores.state.runs[0]!.run.timings as { faithfulness: unknown }).faithfulness).toEqual({ checked: 2, unsupported: ["₹31 Cr", "12%"] });
+  });
+
+  it("a faithful reply is not flagged", async () => {
+    const stores = freshStores();
+    const model = scriptedModel("p", [toolCall("portfolio_analytics", { sections: ["totals"] }), text("Your 3 properties are worth ₹29.7 Cr.")]);
+    const r = await handleChatTurn(chatDeps(stores, model), { userId: "U001", message: "total?" });
+    expect(r.needsAttention).toBe(false);
+    expect((stores.state.runs[0]!.run.timings as { faithfulness: unknown }).faithfulness).toEqual({ checked: 2, unsupported: [] });
+  });
+});

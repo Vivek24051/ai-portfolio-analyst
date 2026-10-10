@@ -45,6 +45,16 @@ function RunDetails({ run, index }: { run: TraceRun; index: number }) {
         <dd>{num(run.completionTokens)}</dd>
         <dt>Cost</dt>
         <dd>{usd(run.costUsd)}</dd>
+        <dt>Numeric faithfulness</dt>
+        <dd>
+          {run.faithfulness === null ? (
+            <NA why="not checked (error turn)" />
+          ) : run.faithfulness.unsupported.length === 0 ? (
+            <span className="badge ok">{run.faithfulness.checked} figures, all traced to tool output</span>
+          ) : (
+            <span className="badge err">unsupported: {run.faithfulness.unsupported.join(", ")}</span>
+          )}
+        </dd>
         <dt>Run id</dt>
         <dd className="mono">{run.id}</dd>
       </dl>

@@ -9,6 +9,7 @@ import "server-only";
 import { parseConversationState } from "@/agent/conversationState";
 import type { LlmCallRecord, Span } from "@/agent/telemetry";
 import { notFound } from "@/server/errors";
+import { percentile } from "@/lib/stats";
 import { redactSecrets, truncate } from "@/server/redact";
 import type { AgentRunRecord, ConversationRecord, MessageRecord, PendingActionRecord, Stores } from "@/server/stores/types";
 
@@ -59,12 +60,7 @@ export interface RunMetrics {
   modelsSeen: string[];
 }
 
-export function percentile(values: number[], p: number): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)); // nearest-rank
-  return sorted[idx]!;
-}
+export { percentile };
 
 export function runMetrics(runs: AgentRunRecord[]): RunMetrics {
   const okModelRuns = runs.filter((r) => r.status === "OK" && r.llmCalls > 0).map((r) => r.totalMs);
@@ -193,6 +189,8 @@ export interface TraceRun {
   spans: Span[];
   llmCalls: LlmCallRecord[];
   toolCalls: TraceToolCall[];
+  /** null = not checked (error turn or older run). */
+  faithfulness: { checked: number; unsupported: string[] } | null;
 }
 
 export interface ConversationTrace {
@@ -217,6 +215,7 @@ interface StoredTimings {
   spans?: Span[];
   llmCalls?: Partial<LlmCallRecord>[];
   toolRounds?: number;
+  faithfulness?: { checked: number; unsupported: string[] } | null;
 }
 
 function normaliseLlmCall(c: Partial<LlmCallRecord>): LlmCallRecord {
@@ -290,6 +289,7 @@ export async function getConversationTrace(stores: Stores, conversationId: strin
         costUsd: run.costUsd,
         error: run.error ? redactSecrets(run.error) : null,
         spans: timings.spans ?? [],
+        faithfulness: timings.faithfulness ?? null,
         llmCalls: (timings.llmCalls ?? []).map(normaliseLlmCall),
         toolCalls: toolCalls.map((t, position) => ({
           position,

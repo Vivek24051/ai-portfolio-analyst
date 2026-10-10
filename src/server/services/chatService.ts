@@ -6,13 +6,14 @@
 // produce a safe fallback message, the conversation is flagged for attention, and the error is
 // recorded on the run. No partial agent output (e.g. half a tool loop) is persisted on failure.
 
-import { HumanMessage } from "@langchain/core/messages";
+import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { randomUUID } from "node:crypto";
 import { parseConversationState, type ConversationState } from "@/agent/conversationState";
 import { runAgent } from "@/agent/graph";
 import { messageText, toLangChainMessages, toNewMessages } from "@/agent/memory";
 import { ModelUnavailableError, type ModelRouter } from "@/agent/model";
 import { createDeadline } from "@/agent/deadline";
+import { checkNumericFaithfulness } from "@/agent/faithfulness";
 import { safeEmitter, summarizeToolOutcome, toolLabel, type EmitFn } from "@/agent/events";
 import { buildSystemPrompt } from "@/agent/prompt";
 import { RunRecorder } from "@/agent/telemetry";
@@ -139,6 +140,7 @@ export async function handleChatTurn(
   let status: "ok" | "error" = "ok";
   let errorText: string | null = null;
   let toolRounds = 0;
+  let faithfulness: { checked: number; unsupported: string[] } | null = null;
   let attention: string | null = null;
   let turnMessages: NewMessage[];
   let finalState: ConversationState;
@@ -155,6 +157,15 @@ export async function handleChatTurn(
     finalState = { ...toolCtx.state, consecutiveFailures: 0 };
 
     if (result.stopReason === "tool_limit") attention = "tool_limit: agent hit the tool-round limit";
+    // Every figure in the reply must trace to tool output, the user's own words, or data labels.
+    const sources = [
+      ...[...history, ...result.newMessages].filter((m) => ToolMessage.isInstance(m) || HumanMessage.isInstance(m)).map(messageText),
+      input.message,
+      ...properties.map((p) => p.locationRaw),
+    ];
+    const check = checkNumericFaithfulness(reply, sources);
+    faithfulness = { checked: check.numbers.length, unsupported: check.unsupported.map((n) => n.raw) };
+    if (check.unsupported.length > 0) attention ??= `unsupported_numbers: ${faithfulness.unsupported.slice(0, 5).join(", ")}`;
     const failedTools = recorder.toolCalls.filter((t) => !t.ok).length;
     if (failedTools >= 2) attention ??= `tool_errors: ${failedTools} failed tool calls in one turn`;
     if (toolCtx.events.handoff) attention = `handoff (${toolCtx.events.handoff.reason}): ${toolCtx.events.handoff.note}`;
@@ -207,7 +218,7 @@ export async function handleChatTurn(
     fallbackUsed: usage.usedFallback,
   };
   await recordRun(stores, recorder, {
-    runId, conversationId: conversation.id, userId: user.id, status: status === "ok" ? "OK" : "ERROR", errorText, startedAt: now, telemetry,
+    runId, conversationId: conversation.id, userId: user.id, status: status === "ok" ? "OK" : "ERROR", errorText, startedAt: now, telemetry, faithfulness,
   });
 
   const proposed = toolCtx.events.proposed;
@@ -236,6 +247,7 @@ async function recordRun(
     errorText: string | null;
     startedAt: Date;
     telemetry: ChatTurnResult["telemetry"];
+    faithfulness?: { checked: number; unsupported: string[] } | null;
   },
 ) {
   try {
@@ -257,7 +269,7 @@ async function recordRun(
         completionTokens: tokens.completionTokens,
         costUsd: recorder.costUsd(), // provider-reported only; null = unknown
         error: r.errorText,
-        timings: { spans: recorder.spans, llmCalls: recorder.llmCalls, toolRounds: r.telemetry.toolRounds },
+        timings: { spans: recorder.spans, llmCalls: recorder.llmCalls, toolRounds: r.telemetry.toolRounds, faithfulness: r.faithfulness ?? null },
         startedAt: r.startedAt,
       },
       recorder.toolCalls,
