@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import type { z } from "zod";
 import { badRequest, HttpError, unauthorized } from "./errors";
+import { logError } from "./redact";
 import { SESSION_COOKIE, verifySessionToken } from "./session";
 
 /** The authenticated demo user, from the signed cookie only. */
@@ -36,6 +37,6 @@ export function errorResponse(e: unknown): NextResponse {
   if (e instanceof HttpError) {
     return NextResponse.json({ error: { code: e.code, message: e.message } }, { status: e.status });
   }
-  console.error("[api] unhandled error", e);
+  logError("api", e);
   return NextResponse.json({ error: { code: "internal_error", message: "Something went wrong. Please try again." } }, { status: 500 });
 }

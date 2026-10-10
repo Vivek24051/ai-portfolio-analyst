@@ -5,6 +5,7 @@
 
 import { ChatOpenAI } from "@langchain/openai";
 import { AIMessage, type AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
+import { safeErrorMessage } from "@/server/redact";
 import { createDeadline, raceAbort } from "./deadline";
 import type { RunRecorder } from "./telemetry";
 import type { ToolSpec } from "./tools";
@@ -58,6 +59,8 @@ export function createOpenRouterModel(modelId: string, apiKey: string): ChatMode
     // Retries/fallback are handled by invokeWithFallback, so failures surface fast.
     maxRetries: 0,
     streamUsage: true,
+    // Ask OpenRouter to include usage accounting (tokens + cost) in responses.
+    modelKwargs: { usage: { include: true } },
     configuration: {
       baseURL: OPENROUTER_BASE_URL,
       defaultHeaders: { "X-Title": "AI Real Estate Portfolio Analyst" },
@@ -88,7 +91,27 @@ export function createOpenRouterModel(modelId: string, apiKey: string): ChatMode
   };
 }
 
-const describe = (e: unknown) => (e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+/**
+ * Provider-reported cost in USD, or null. Checks the places OpenRouter usage accounting may
+ * surface through LangChain metadata. ASSUMPTION — not yet verified against a live OpenRouter
+ * response; if none match, cost stays null (unknown) rather than being estimated.
+ */
+export function extractCostUsd(message: AIMessage): number | null {
+  const meta = (message.response_metadata ?? {}) as Record<string, unknown>;
+  const candidates = [
+    (meta.usage as Record<string, unknown> | undefined)?.cost,
+    (meta.tokenUsage as Record<string, unknown> | undefined)?.cost,
+    meta.cost,
+  ];
+  for (const c of candidates) {
+    const n = typeof c === "string" ? Number(c) : c;
+    if (typeof n === "number" && Number.isFinite(n) && n >= 0) return n;
+  }
+  return null;
+}
+
+/** Redacted, length-capped error text (provider errors can echo request details). */
+const describe = (e: unknown) => safeErrorMessage(e, 300);
 
 export interface StreamHooks {
   onDelta(text: string): void;
@@ -105,11 +128,19 @@ export interface StreamHooks {
 export async function invokeWithFallback(
   router: ModelRouter,
   messages: BaseMessage[],
-  opts: { tools: ToolSpec[] | null; turnSignal: AbortSignal; stream?: StreamHooks },
+  opts: {
+    tools: ToolSpec[] | null;
+    turnSignal: AbortSignal;
+    stream?: StreamHooks;
+    /** Per-turn circuit breaker: once the primary failed in this turn, go straight to the fallback. */
+    skipPrimary?: boolean;
+  },
   recorder: RunRecorder,
-): Promise<{ message: AIMessage; modelId: string; usedFallback: boolean }> {
-  const attempts: Array<{ model: ChatModel; isFallback: boolean }> = [{ model: router.primary, isFallback: false }];
+): Promise<{ message: AIMessage; modelId: string; usedFallback: boolean; primaryFailed: boolean }> {
+  const attempts: Array<{ model: ChatModel; isFallback: boolean }> = [];
+  if (!(opts.skipPrimary && router.fallback)) attempts.push({ model: router.primary, isFallback: false });
   if (router.fallback) attempts.push({ model: router.fallback, isFallback: true });
+  let primaryFailed = false;
   const causes: string[] = [];
 
   for (const { model, isFallback } of attempts) {
@@ -144,11 +175,13 @@ export async function invokeWithFallback(
         error: null,
         promptTokens: usage?.input_tokens ?? null,
         completionTokens: usage?.output_tokens ?? null,
+        costUsd: extractCostUsd(message),
       });
-      return { message, modelId: model.id, usedFallback: isFallback };
+      return { message, modelId: model.id, usedFallback: isFallback, primaryFailed };
     } catch (e) {
       if (streamed) opts.stream?.onReset();
       const reason = signal.aborted && !opts.turnSignal.aborted ? `timeout after ${router.callTimeoutMs} ms` : describe(e);
+      if (!isFallback) primaryFailed = true;
       causes.push(`${model.id}: ${reason}`);
       recorder.llmCalls.push({
         ...base,
@@ -159,6 +192,7 @@ export async function invokeWithFallback(
         error: reason,
         promptTokens: null,
         completionTokens: null,
+        costUsd: null,
       });
     } finally {
       deadline.clear();

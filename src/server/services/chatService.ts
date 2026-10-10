@@ -19,6 +19,7 @@ import { RunRecorder } from "@/agent/telemetry";
 import { newTurnEvents, type ToolContext } from "@/agent/tools";
 import type { DiffEntry } from "@/domain/propertyChanges";
 import { notFound, unauthorized } from "@/server/errors";
+import { logError, safeErrorMessage } from "@/server/redact";
 import { cancelPendingAction, confirmPendingAction, type ActionContext } from "@/server/services/propertyActions";
 import type { NewMessage, PendingActionRecord, Stores } from "@/server/stores/types";
 import { formatInr } from "@/domain/money";
@@ -94,11 +95,13 @@ async function resolveConversation(stores: Stores, userId: string, conversationI
 
 export async function handleChatTurn(
   deps: ChatDeps,
-  input: { userId: string; conversationId?: string; message: string },
+  input: { userId: string; conversationId?: string; message: string; /** performance.now() when the HTTP request arrived */ receivedAt?: number },
   onEvent?: EmitFn,
 ): Promise<ChatTurnResult> {
   const now = (deps.now ?? (() => new Date()))();
-  const recorder = new RunRecorder();
+  // Timing starts at request receipt when the route provides it, so totals include auth/validation.
+  const recorder = new RunRecorder(input.receivedAt);
+  if (input.receivedAt !== undefined) recorder.addSpan("request_validation", performance.now() - input.receivedAt);
   const runId = randomUUID();
   const { stores } = deps;
 
@@ -160,14 +163,13 @@ export async function handleChatTurn(
     // LangGraph may surface the deadline as its own abort error, so check the signal too.
     const timedOut = deadline.signal.aborted;
     const isModel = e instanceof ModelUnavailableError;
+    // Stored on the run and shown in the admin trace: redacted and length-capped.
     errorText = isModel
-      ? `${e.message}: ${e.causes.join(" | ")}`
+      ? safeErrorMessage(`${e.message}: ${e.causes.join(" | ")}`, 1000)
       : timedOut
         ? `Turn deadline of ${deps.turnDeadlineMs} ms exceeded`
-        : e instanceof Error
-          ? `${e.name}: ${e.message}`
-          : String(e);
-    if (!isModel && !timedOut) console.error("[chat] unexpected agent error", e);
+        : safeErrorMessage(e);
+    if (!isModel && !timedOut) logError("chat", e);
     reply = isModel || timedOut ? MODEL_UNAVAILABLE_REPLY : INTERNAL_ERROR_REPLY;
     if (toolCtx.events.confirmedPropertyId) {
       // A confirmed write committed before the failure: never claim nothing changed.
@@ -253,7 +255,7 @@ async function recordRun(
         toolCallCount: r.telemetry.toolCalls,
         promptTokens: tokens.promptTokens,
         completionTokens: tokens.completionTokens,
-        costUsd: null, // populated once OpenRouter usage accounting is wired (Phase 5)
+        costUsd: recorder.costUsd(), // provider-reported only; null = unknown
         error: r.errorText,
         timings: { spans: recorder.spans, llmCalls: recorder.llmCalls, toolRounds: r.telemetry.toolRounds },
         startedAt: r.startedAt,
@@ -262,7 +264,7 @@ async function recordRun(
     );
   } catch (e) {
     // Telemetry must never break the user's reply.
-    console.error("[chat] failed to record run", e);
+    logError("chat:record-run", e);
   }
 }
 

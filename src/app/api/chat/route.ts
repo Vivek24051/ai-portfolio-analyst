@@ -12,6 +12,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
+  const receivedAt = performance.now();
   try {
     const userId = await requireUserId(req);
     const body = await parseJsonBody(req, chatRequestSchema);
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest) {
 
     const result = await handleChatTurn(
       { stores: c.stores, router: c.router, historyLimit: c.config.historyLimit, turnDeadlineMs: c.config.turnDeadlineMs },
-      { userId, conversationId: body.conversationId, message: body.message },
+      { userId, conversationId: body.conversationId, message: body.message, receivedAt },
     );
     return NextResponse.json({ ...result, modelMode: c.modelMode });
   } catch (e) {

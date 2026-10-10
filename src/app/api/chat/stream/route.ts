@@ -11,6 +11,7 @@ import { getContainer } from "@/server/container";
 import { HttpError, notFound, tooManyRequests } from "@/server/errors";
 import { errorResponse, parseJsonBody, requireUserId } from "@/server/http";
 import { chatRequestSchema } from "@/server/schemas";
+import { logError } from "@/server/redact";
 import { handleChatTurn } from "@/server/services/chatService";
 
 export const runtime = "nodejs";
@@ -19,6 +20,7 @@ export const maxDuration = 60;
 const HEARTBEAT_MS = 15_000;
 
 export async function POST(req: NextRequest) {
+  const receivedAt = performance.now();
   let userId: string;
   let body: { conversationId?: string; message: string };
   let c: Awaited<ReturnType<typeof getContainer>>;
@@ -49,12 +51,12 @@ export async function POST(req: NextRequest) {
       try {
         const result = await handleChatTurn(
           { stores: c.stores, router: c.router, historyLimit: c.config.historyLimit, turnDeadlineMs: c.config.turnDeadlineMs },
-          { userId, conversationId: body.conversationId, message: body.message },
+          { userId, conversationId: body.conversationId, message: body.message, receivedAt },
           send,
         );
         send({ type: "done", result });
       } catch (e) {
-        if (!(e instanceof HttpError)) console.error("[api/chat/stream] unhandled error", e);
+        if (!(e instanceof HttpError)) logError("api/chat/stream", e);
         send({
           type: "error",
           code: e instanceof HttpError ? e.code : "internal_error",

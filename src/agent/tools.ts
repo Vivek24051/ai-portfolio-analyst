@@ -8,6 +8,7 @@
 //  - Tool failures are returned to the model as structured errors, never thrown into the loop.
 
 import { z } from "zod";
+import { logError } from "@/server/redact";
 import { compareGroups, pct, rankProperties, RANK_METRICS, summarizePortfolio, toView } from "@/domain/analytics";
 import { applyFilter, propertyFilterSchema, type PropertyFilter } from "@/domain/filters";
 import { moneySchema, toInr, MoneyError } from "@/domain/money";
@@ -461,7 +462,7 @@ export async function executeToolCall(ctx: ToolContext, call: ToolCallRequest): 
     if (e instanceof ToolError) return finish(false, { error: e.code, message: e.message }, e.code);
     if (e instanceof ScenarioError) return finish(false, { error: "invalid_scenario", message: e.message }, "invalid_scenario");
     if (e instanceof MoneyError) return finish(false, { error: "invalid_amount", message: e.message }, "invalid_amount");
-    console.error(`[tool:${call.name}] unexpected error`, e);
+    logError(`tool:${call.name}`, e);
     return finish(false, { error: "internal_error", message: "The tool failed unexpectedly. Do not guess the answer." }, "internal_error");
   }
 }
