@@ -40,6 +40,10 @@ export interface AgentDeps {
     failedModelIds?: string[];
     /** Some answer this turn came from the last-resort stub. */
     usedLastResort?: boolean;
+    /** Real (non-stub) model calls made so far this turn, for the router's per-turn cap. */
+    realModelCalls?: number;
+    /** Why the last resort had to answer (redacted causes from the model router). */
+    degradedCauses?: string[];
   };
   /** Progress events for the client (already wrapped so it can never throw). */
   emit: EmitFn;
@@ -82,7 +86,7 @@ async function agentNode(state: State, config: LangGraphRunnableConfig): Promise
   const system = new SystemMessage(d.systemPrompt + (budgetLeft ? "" : BUDGET_EXHAUSTED_NOTE));
   d.emit({ type: "status", label: state.toolRounds === 0 ? "Thinking…" : "Putting the answer together…" });
   let streamedText = false;
-  const { message, modelId, usedFallback, primaryFailed, usedLastResort, failedModelIds } = await invokeWithFallback(
+  const { message, modelId, usedFallback, primaryFailed, usedLastResort, failedModelIds, realCalls, causes } = await invokeWithFallback(
     d.router,
     [system, ...state.messages],
     {
@@ -90,6 +94,7 @@ async function agentNode(state: State, config: LangGraphRunnableConfig): Promise
       turnSignal: d.turnSignal,
       skipPrimary: d.usage.primaryFailed === true,
       skipModelIds: d.usage.failedModelIds ?? [],
+      realCallsSoFar: d.usage.realModelCalls ?? 0,
       stream: {
         onDelta: (text) => {
           streamedText = true;
@@ -106,7 +111,11 @@ async function agentNode(state: State, config: LangGraphRunnableConfig): Promise
   d.usage.modelId = modelId;
   d.usage.usedFallback ||= usedFallback;
   if (primaryFailed) d.usage.primaryFailed = true;
-  if (usedLastResort) d.usage.usedLastResort = true;
+  d.usage.realModelCalls = (d.usage.realModelCalls ?? 0) + realCalls;
+  if (usedLastResort) {
+    d.usage.usedLastResort = true;
+    if (causes.length) d.usage.degradedCauses = [...new Set([...(d.usage.degradedCauses ?? []), ...causes])].slice(0, 4);
+  }
   if (failedModelIds.length) d.usage.failedModelIds = [...new Set([...(d.usage.failedModelIds ?? []), ...failedModelIds])];
   const normalised = normaliseToolCalls(message);
   // Text streamed alongside tool calls is a preamble ("let me check…"), not the answer.

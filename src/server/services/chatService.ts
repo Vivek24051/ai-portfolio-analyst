@@ -9,7 +9,7 @@
 import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { randomUUID } from "node:crypto";
 import { parseConversationState, type ConversationState } from "@/agent/conversationState";
-import { runAgent } from "@/agent/graph";
+import { runAgent, type AgentDeps } from "@/agent/graph";
 import { messageText, toLangChainMessages, toNewMessages } from "@/agent/memory";
 import { ModelUnavailableError, type ModelRouter } from "@/agent/model";
 import { createDeadline } from "@/agent/deadline";
@@ -132,7 +132,7 @@ export async function handleChatTurn(
     state: structuredClone(state),
     events: newTurnEvents(),
   };
-  const usage: { modelId: string | null; usedFallback: boolean; usedLastResort?: boolean } = { modelId: null, usedFallback: false };
+  const usage: AgentDeps["usage"] = { modelId: null, usedFallback: false };
   const userMessage = new HumanMessage(input.message);
   const systemPrompt = buildSystemPrompt({ user, properties, state, pendingAction: pending, now });
 
@@ -169,7 +169,11 @@ export async function handleChatTurn(
     const failedTools = recorder.toolCalls.filter((t) => !t.ok).length;
     if (failedTools >= 2) attention ??= `tool_errors: ${failedTools} failed tool calls in one turn`;
     // A real model was configured but unavailable: the reply is a labelled stub answer. Keep the outage visible.
-    if (usage.usedLastResort) attention ??= "model_degraded: real model unavailable; answered by the dev stub (last resort)";
+    if (usage.usedLastResort) {
+      // Causes are already redacted; they say whether it was an error, a quota cooldown or the call cap.
+      const why = usage.degradedCauses?.length ? ` — ${usage.degradedCauses.join(" | ")}` : "";
+      attention ??= safeErrorMessage(`model_degraded: real model unavailable; answered by the dev stub (last resort)${why}`, 500);
+    }
     if (toolCtx.events.handoff) attention = `handoff (${toolCtx.events.handoff.reason}): ${toolCtx.events.handoff.note}`;
   } catch (e) {
     status = "error";

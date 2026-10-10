@@ -15,8 +15,14 @@
 //
 // Free-only guard: an OpenRouter model id must end in ":free" unless OPENROUTER_ALLOW_PAID=true
 // (default false). A refused id is treated as "not configured" — it never falls through to a paid model.
+//
+// Quota guard: LLM_MAX_MODEL_CALLS_PER_TURN (default 4, clamped to 1–12) caps calls to real models in
+// one user turn, across tool rounds and the fallback chain; the labelled stub answers once it is reached.
 
 export const MAX_TOOL_ROUNDS = 5;
+
+export const DEFAULT_MAX_MODEL_CALLS_PER_TURN = 4;
+const MAX_MODEL_CALLS_CEILING = 12; // (MAX_TOOL_ROUNDS + 1 final call) × (primary + fallback)
 
 export interface AgentConfig {
   /**
@@ -44,6 +50,8 @@ export interface AgentConfig {
   turnDeadlineMs: number;
   /** Messages of history loaded per turn. */
   historyLimit: number;
+  /** Hard cap on real (non-stub) model calls per user turn. */
+  maxModelCallsPerTurn: number;
 }
 
 const int = (v: string | undefined, d: number) => {
@@ -87,5 +95,9 @@ export function loadAgentConfig(env: NodeJS.ProcessEnv = process.env): AgentConf
     llmCallTimeoutMs: int(env.LLM_CALL_TIMEOUT_MS, 20_000),
     turnDeadlineMs: int(env.CHAT_TURN_DEADLINE_MS, 50_000),
     historyLimit: int(env.CHAT_HISTORY_LIMIT, 30),
+    maxModelCallsPerTurn: Math.min(
+      MAX_MODEL_CALLS_CEILING,
+      Math.max(1, Math.floor(int(env.LLM_MAX_MODEL_CALLS_PER_TURN, DEFAULT_MAX_MODEL_CALLS_PER_TURN))),
+    ),
   };
 }

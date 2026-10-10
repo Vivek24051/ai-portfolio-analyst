@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { seedFile } from "@/data/paths";
 import { isAllowedOpenRouterModel, loadAgentConfig, type AgentConfig } from "@/agent/config";
 import { createDevStubModel } from "@/agent/devStubModel";
-import { createGeminiModel, createOpenRouterModel, type ChatModel, type ModelRouter } from "@/agent/model";
+import { createGeminiModel, createOpenRouterModel, ModelCooldowns, type ChatModel, type ModelRouter } from "@/agent/model";
 import { redactSecrets } from "./redact";
 import { buildSeed } from "@/data/seedData";
 import { RateLimiter } from "./rateLimit";
@@ -93,7 +93,8 @@ export function createRouter(config: AgentConfig): { router: ModelRouter; modelM
     console.warn("[container] unrecognised LLM_FALLBACK_PROVIDER value; no cross-provider fallback (expected: gemini, openrouter, stub)");
   }
   const fallbackProvider = config.unrecognizedFallbackProvider ? null : (config.fallbackProvider ?? primaryProvider);
-  const stub = devStubModel();
+  // Behind a real model the stub only answers when that model failed: it must not claim "no LLM configured".
+  const stub = devStubModel({ lastResort: true });
   const fallback =
     fallbackProvider === "stub" ? stub : fallbackProvider ? buildModel(fallbackProvider, config.fallbackModel, config, "fallback") : null;
   const lastResort = config.stubLastResort && fallback !== stub ? stub : null;
@@ -102,14 +103,22 @@ export function createRouter(config: AgentConfig): { router: ModelRouter; modelM
   return {
     modelMode: primaryProvider,
     modelChain: [primary, fallback, lastResort].filter((m): m is ChatModel => m !== null).map(label),
-    router: { primary, fallback, lastResort, callTimeoutMs: config.llmCallTimeoutMs },
+    router: {
+      primary,
+      fallback,
+      lastResort,
+      callTimeoutMs: config.llmCallTimeoutMs,
+      // One router per server instance (the container is cached), so cooldowns span that instance's turns.
+      cooldowns: new ModelCooldowns(),
+      maxRealCallsPerTurn: config.maxModelCallsPerTurn,
+    },
   };
 }
 
-function devStubModel(): ChatModel {
+function devStubModel(opts: { lastResort?: boolean } = {}): ChatModel {
   // DEV_STUB_STREAM_DELAY_MS: artificial per-word delay for demos (default 12); 0 for benchmarks.
   const delay = Number(process.env.DEV_STUB_STREAM_DELAY_MS);
-  return createDevStubModel(Number.isFinite(delay) && delay >= 0 ? { streamDelayMs: delay } : {});
+  return createDevStubModel({ ...(Number.isFinite(delay) && delay >= 0 ? { streamDelayMs: delay } : {}), ...opts });
 }
 
 function devStubRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"]; modelChain: string[] } {

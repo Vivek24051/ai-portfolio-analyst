@@ -4,7 +4,8 @@
 
 type Json = Record<string, any>;
 
-const LABEL = "[dev stub — template reply, no LLM]";
+export const STUB_TEMPLATE_LABEL = "[dev stub — template reply, no LLM]";
+const LABEL = STUB_TEMPLATE_LABEL;
 
 /** Questions about gains over time. The data has no purchase dates, so these get an honest "can't". */
 export const APPRECIATION_QUESTION =

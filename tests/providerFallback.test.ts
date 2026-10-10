@@ -3,9 +3,9 @@
 // spy, and no real key, endpoint or account is ever used.
 import { HumanMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadAgentConfig } from "@/agent/config";
-import { DEV_STUB_ID, createDevStubModel } from "@/agent/devStubModel";
-import { invokeWithFallback, ModelUnavailableError, type ChatModel, type ModelRouter } from "@/agent/model";
+import { DEFAULT_MAX_MODEL_CALLS_PER_TURN, loadAgentConfig } from "@/agent/config";
+import { DEV_STUB_ID, DEV_STUB_LAST_RESORT_ID, createDevStubModel } from "@/agent/devStubModel";
+import { invokeWithFallback, ModelCooldowns, ModelUnavailableError, type ChatModel, type ModelRouter } from "@/agent/model";
 import { RunRecorder } from "@/agent/telemetry";
 import { getConversationTrace } from "@/server/admin/adminService";
 import { createRouter, isAllowedOpenRouterModel } from "@/server/container";
@@ -40,7 +40,12 @@ describe("configuration: chain, free-only guard, safe defaults (no network)", ()
     expect(r.modelChain).toEqual(["gemini:gem-a", "openrouter:vendor/x:free", "stub"]);
     expect(r.router.primary.provider).toBe("gemini");
     expect(r.router.fallback?.provider).toBe("openrouter");
-    expect(r.router.lastResort?.id).toBe(DEV_STUB_ID);
+    // Behind a real model the stub is the labelled last resort, never "no LLM configured".
+    expect(r.router.lastResort?.id).toBe(DEV_STUB_LAST_RESORT_ID);
+    expect(r.router.lastResort?.id).not.toBe(DEV_STUB_ID);
+    // Quota guards are on for real chains: a cooldown store and the default per-turn call cap.
+    expect(r.router.cooldowns).toBeInstanceOf(ModelCooldowns);
+    expect(r.router.maxRealCallsPerTurn).toBe(DEFAULT_MAX_MODEL_CALLS_PER_TURN);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

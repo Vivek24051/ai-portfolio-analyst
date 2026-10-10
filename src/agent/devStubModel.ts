@@ -11,10 +11,31 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage }
 import { isAffirmative } from "@/domain/affirmation";
 import { parseMoneyText, type Money } from "@/domain/money";
 import type { ChatModel } from "./model";
-import { APPRECIATION_QUESTION, formatToolResultForStub } from "./stubFormat";
+import { APPRECIATION_QUESTION, formatToolResultForStub, STUB_TEMPLATE_LABEL } from "./stubFormat";
 
+/** The stub as the configured model (LLM_PROVIDER=stub, or no real model configured). */
 export const DEV_STUB_ID = "dev-stub (no LLM configured)";
 const PREFIX = "[dev stub — no LLM configured]";
+
+/**
+ * The stub behind a real model (explicit fallback or last resort): it only answers because that model
+ * failed, hit a quota cooldown or the per-turn call cap — so it must not say "no LLM configured".
+ */
+export const DEV_STUB_LAST_RESORT_ID = "dev-stub (last resort, no LLM)";
+export const LAST_RESORT_PREFIX = "[dev stub — AI model unavailable, keyword fallback, no LLM]";
+export const LAST_RESORT_TEMPLATE_LABEL = "[dev stub — AI model unavailable; template reply, no LLM]";
+
+/** Swaps the stub-mode labels for the last-resort ones (tool-call messages have no text and pass through). */
+function relabelForLastResort(message: AIMessage): AIMessage {
+  const text = message.content;
+  if (typeof text !== "string") return message;
+  const swap = text.startsWith(PREFIX)
+    ? LAST_RESORT_PREFIX + text.slice(PREFIX.length)
+    : text.startsWith(STUB_TEMPLATE_LABEL)
+      ? LAST_RESORT_TEMPLATE_LABEL + text.slice(STUB_TEMPLATE_LABEL.length)
+      : null;
+  return swap === null ? message : new AIMessage({ content: swap, tool_calls: message.tool_calls });
+}
 
 // Ids must be unique across the whole conversation, which is reloaded from the database: a per-process
 // counter restarts on every serverless cold start and collided with ids already in the history.
@@ -488,8 +509,8 @@ function route(text: string, ctx: StubContext): AIMessage {
   if (city) return call("search_properties", { filter: { city } });
   if (/total|overview|look like|summary|worth|portfolio/.test(t)) return call("portfolio_analytics", {});
   return new AIMessage(
-    `${PREFIX} To use a real model, set LLM_PROVIDER (gemini or openrouter), that provider's API key, and LLM_PRIMARY_MODEL; LLM_PROVIDER=stub always keeps this stub. ` +
-      `Stub demos: "portfolio overview", "how much of my portfolio is retail?", "which of those earns more rent?", ` +
+    `${PREFIX} This keyword stub is not an AI model, so it only understands certain phrasings. ` +
+      `Try: "portfolio overview", "how much of my portfolio is retail?", "which of those earns more rent?", ` +
       `"what if the rent of <property> increases by <n>%?", "properties in Mumbai".`,
   );
 }
@@ -510,16 +531,17 @@ function respond(messages: BaseMessage[]): AIMessage {
 }
 
 /** Word-by-word pseudo-streaming so the UI's streaming path can be demoed without an LLM. */
-export function createDevStubModel(opts: { streamDelayMs?: number } = {}): ChatModel {
+export function createDevStubModel(opts: { streamDelayMs?: number; lastResort?: boolean } = {}): ChatModel {
   const delay = opts.streamDelayMs ?? 12;
+  const answer = (messages: BaseMessage[]) => (opts.lastResort ? relabelForLastResort(respond(messages)) : respond(messages));
   return {
-    id: DEV_STUB_ID,
+    id: opts.lastResort ? DEV_STUB_LAST_RESORT_ID : DEV_STUB_ID,
     provider: "stub",
     async invoke(messages) {
-      return respond(messages);
+      return answer(messages);
     },
     async stream(messages, { signal }, onDelta) {
-      const message = respond(messages);
+      const message = answer(messages);
       const text = typeof message.content === "string" ? message.content : "";
       for (const piece of text.match(/\S+\s*/g) ?? []) {
         if (signal.aborted) break;
