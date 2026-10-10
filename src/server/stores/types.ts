@@ -65,10 +65,101 @@ export interface PendingActionStore {
   resolve(id: string, to: Exclude<PendingActionStatus, "PENDING">, at: Date): Promise<boolean>;
 }
 
+// ---------- Conversations ----------
+
+export type MessageRole = "USER" | "ASSISTANT" | "TOOL";
+
+export interface StoredToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface MessageRecord {
+  id: string;
+  conversationId: string;
+  role: MessageRole;
+  content: string;
+  /** Assistant messages: tool calls the model requested. */
+  toolCalls: StoredToolCall[] | null;
+  /** Tool messages: which call this result answers. */
+  toolCallId: string | null;
+  toolName: string | null;
+  runId: string | null;
+  createdAt: Date;
+}
+
+export type NewMessage = Omit<MessageRecord, "id" | "conversationId" | "createdAt">;
+
+export interface ConversationRecord {
+  id: string;
+  userId: string;
+  /** Backend-owned structured state (validated by the agent layer on read). */
+  state: unknown;
+  needsAttention: boolean;
+  attentionReason: string | null;
+  createdAt: Date;
+  lastMessageAt: Date;
+}
+
+export interface ConversationStore {
+  create(userId: string, now: Date): Promise<ConversationRecord>;
+  get(userId: string, conversationId: string): Promise<ConversationRecord | null>;
+  listByUser(userId: string): Promise<ConversationRecord[]>;
+  /** Last `limit` messages in chronological order. */
+  recentMessages(userId: string, conversationId: string, limit: number): Promise<MessageRecord[]>;
+  /**
+   * Atomically appends a turn's messages and saves the new state. `attentionReason` sets the
+   * needs-attention flag; it is never cleared automatically (a human clears it).
+   */
+  appendTurn(
+    userId: string,
+    conversationId: string,
+    turn: { messages: NewMessage[]; state: unknown; attentionReason: string | null; now: Date },
+  ): Promise<void>;
+}
+
+// ---------- Run telemetry ----------
+
+export interface ToolCallRecord {
+  name: string;
+  args: unknown;
+  result: unknown;
+  ok: boolean;
+  error: string | null;
+  durationMs: number;
+}
+
+export interface AgentRunRecord {
+  id: string;
+  conversationId: string;
+  userId: string;
+  status: "OK" | "ERROR";
+  model: string | null;
+  fallbackUsed: boolean;
+  totalMs: number;
+  llmMs: number;
+  toolMs: number;
+  llmCalls: number;
+  toolCallCount: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  costUsd: number | null;
+  error: string | null;
+  timings: unknown;
+  startedAt: Date;
+}
+
+export interface RunStore {
+  record(run: AgentRunRecord, toolCalls: ToolCallRecord[]): Promise<void>;
+}
+
 export interface Stores {
   users: UserStore;
   properties: PropertyStore;
   pendingActions: PendingActionStore;
+  conversations: ConversationStore;
+  runs: RunStore;
   /** Runs fn atomically (DB transaction for Prisma; sequential for in-memory). */
   transaction<T>(fn: (tx: Stores) => Promise<T>): Promise<T>;
 }

@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { round2, summarizePortfolio, type PortfolioSummary } from "./analytics";
+import { formatInr } from "./money";
 import { ASSET_CLASSES, OCCUPANCY_STATUSES, type Property } from "./types";
 
 export const hypotheticalAdditionSchema = z
@@ -89,17 +90,17 @@ export function runScenario(properties: Property[], rawInput: ScenarioInput): Sc
   }
   for (const o of input.valueOverrides) {
     const p = working.find((w) => w.id === o.propertyId)!;
-    description.push(`${p.id} value ${p.currentValueInr} → ${o.newValueInr}`);
+    description.push(`${p.id} value ${formatInr(p.currentValueInr)} → ${formatInr(o.newValueInr)}`);
     p.currentValueInr = o.newValueInr;
   }
   for (const o of input.rentOverrides) {
     const p = working.find((w) => w.id === o.propertyId)!;
-    description.push(`${p.id} annual rent ${p.annualRentInr} → ${o.newAnnualRentInr}`);
+    description.push(`${p.id} annual rent ${formatInr(p.annualRentInr)} → ${formatInr(o.newAnnualRentInr)}`);
     p.annualRentInr = o.newAnnualRentInr;
   }
   input.additions.forEach((a, i) => {
     const id = `HYPOTHETICAL-${i + 1}`;
-    description.push(`Added ${id} (${a.assetClass}, ${a.city}, value ${a.currentValueInr})`);
+    description.push(`Added ${id} (${a.assetClass}, ${a.city}, value ${formatInr(a.currentValueInr)})`);
     working.push({
       id,
       userId: properties[0]?.userId ?? "",

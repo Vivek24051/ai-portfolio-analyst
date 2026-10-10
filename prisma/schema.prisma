@@ -129,6 +129,8 @@ model Conversation {
 
 model Message {
   id             String       @id @default(cuid())
+  /// Monotonic insertion order; several messages in one turn can share a timestamp.
+  seq            Int          @default(autoincrement())
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   role           MessageRole
@@ -140,7 +142,7 @@ model Message {
   runId          String?
   createdAt      DateTime     @default(now())
 
-  @@index([conversationId, createdAt])
+  @@index([conversationId, seq])
 }
 
 /// One row per user turn: the full latency/cost breakdown for that turn.

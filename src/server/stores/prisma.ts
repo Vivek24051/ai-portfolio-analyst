@@ -1,11 +1,26 @@
 // Prisma-backed Stores. Every query includes `userId` in its WHERE clause — the user id comes
 // from the signed session, never from the model.
 
-import type { Prisma, PrismaClient, Property as DbProperty, User as DbUser, PendingAction as DbPendingAction } from "@prisma/client";
+import type {
+  Conversation as DbConversation,
+  Message as DbMessage,
+  PendingAction as DbPendingAction,
+  Prisma,
+  PrismaClient,
+  Property as DbProperty,
+  User as DbUser,
+} from "@prisma/client";
 import { bigIntToInr } from "@/domain/money";
 import type { DiffEntry } from "@/domain/propertyChanges";
 import type { Property, UserProfile } from "@/domain/types";
-import type { PendingActionPayload, PendingActionRecord, Stores } from "./types";
+import type {
+  ConversationRecord,
+  MessageRecord,
+  PendingActionPayload,
+  PendingActionRecord,
+  StoredToolCall,
+  Stores,
+} from "./types";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -66,6 +81,32 @@ function mapPending(a: DbPendingAction): PendingActionRecord {
 }
 
 const json = (v: unknown) => v as Prisma.InputJsonValue;
+
+function mapConversation(c: DbConversation): ConversationRecord {
+  return {
+    id: c.id,
+    userId: c.userId,
+    state: c.state,
+    needsAttention: c.needsAttention,
+    attentionReason: c.attentionReason,
+    createdAt: c.createdAt,
+    lastMessageAt: c.lastMessageAt,
+  };
+}
+
+function mapMessage(m: DbMessage): MessageRecord {
+  return {
+    id: m.id,
+    conversationId: m.conversationId,
+    role: m.role,
+    content: m.content,
+    toolCalls: (m.toolCalls as unknown as StoredToolCall[] | null) ?? null,
+    toolCallId: m.toolCallId,
+    toolName: m.toolName,
+    runId: m.runId,
+    createdAt: m.createdAt,
+  };
+}
 
 function storesFor(db: Db, root: PrismaClient | null): Stores {
   const stores: Stores = {
@@ -165,6 +206,77 @@ function storesFor(db: Db, root: PrismaClient | null): Stores {
           data: { status: to, resolvedAt: at },
         });
         return count === 1;
+      },
+    },
+    conversations: {
+      async create(userId, now) {
+        return mapConversation(await db.conversation.create({ data: { userId, createdAt: now, lastMessageAt: now } }));
+      },
+      async get(userId, conversationId) {
+        const c = await db.conversation.findFirst({ where: { id: conversationId, userId } });
+        return c ? mapConversation(c) : null;
+      },
+      async listByUser(userId) {
+        const rows = await db.conversation.findMany({ where: { userId }, orderBy: { lastMessageAt: "desc" } });
+        return rows.map(mapConversation);
+      },
+      async recentMessages(userId, conversationId, limit) {
+        const rows = await db.message.findMany({
+          where: { conversationId, conversation: { userId } },
+          orderBy: { seq: "desc" },
+          take: limit,
+        });
+        return rows.reverse().map(mapMessage);
+      },
+      async appendTurn(userId, conversationId, turn) {
+        const write = async (tx: Db) => {
+          const { count } = await tx.conversation.updateMany({
+            where: { id: conversationId, userId },
+            data: {
+              state: json(turn.state),
+              lastMessageAt: turn.now,
+              ...(turn.attentionReason ? { needsAttention: true, attentionReason: turn.attentionReason } : {}),
+            },
+          });
+          if (count === 0) throw new Error(`Conversation ${conversationId} not found for user`);
+          // Sequential inserts so `seq` follows the turn's order.
+          for (const m of turn.messages) {
+            await tx.message.create({
+              data: {
+                conversationId,
+                role: m.role,
+                content: m.content,
+                toolCalls: m.toolCalls === null ? undefined : json(m.toolCalls),
+                toolCallId: m.toolCallId,
+                toolName: m.toolName,
+                runId: m.runId,
+                createdAt: turn.now,
+              },
+            });
+          }
+        };
+        if (root) await root.$transaction((tx) => write(tx));
+        else await write(db);
+      },
+    },
+    runs: {
+      async record(run, toolCalls) {
+        await db.agentRun.create({
+          data: {
+            ...run,
+            timings: run.timings === null ? undefined : json(run.timings),
+            toolCalls: {
+              create: toolCalls.map((t) => ({
+                name: t.name,
+                args: json(t.args ?? {}),
+                result: t.result === undefined ? undefined : json(t.result),
+                ok: t.ok,
+                error: t.error,
+                durationMs: Math.round(t.durationMs),
+              })),
+            },
+          },
+        });
       },
     },
     async transaction(fn) {

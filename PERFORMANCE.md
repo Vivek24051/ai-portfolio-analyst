@@ -1,6 +1,17 @@
 # Performance
 
-> **No latency measurements yet.** The agent loop is not built (Phase 2). The tables below will be filled only from real runs of the evaluation harness (Phase 5); no figure here is estimated.
+> **No latency measurements yet.** The instrumentation is built (Phase 2), but no real model has been called. Test timings with mocked models are not representative and are deliberately not reported. The tables below will be filled only from real runs of the evaluation harness (Phase 5).
+
+## Instrumentation status (Phase 2)
+
+| Signal | Status |
+|---|---|
+| Per-turn spans: `context_load`, `agent`, `persist` | ✅ recorded in `AgentRun.timings.spans` |
+| Each LLM call: model, ms, ok/error, fallback flag, tools bound, prompt/completion tokens | ✅ `AgentRun.timings.llmCalls` (tokens when the provider reports them) |
+| Each tool call: name, args, result, ok, error, ms | ✅ `ToolCall` rows |
+| Totals: `totalMs`, `llmMs`, `toolMs`, `llmCalls`, `toolCallCount`, tool rounds | ✅ `AgentRun` columns |
+| Time to first token / first visible token | ⏳ needs streaming (Phase 3) |
+| `costUsd` | ⏳ OpenRouter usage accounting (Phase 5) |
 
 ## What will be measured (per user turn)
 

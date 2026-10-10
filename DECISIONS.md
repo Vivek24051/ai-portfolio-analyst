@@ -80,3 +80,56 @@ It lets the confirmation and authorization logic be unit-tested without a databa
 
 ## D15. Pinned stable dependency versions
 Prisma 6.19 rather than the 8.0 RC tagged `latest`, TypeScript 5.9 rather than 7.0 (the new native compiler), and Vitest 4. Toolchain churn is the riskiest use of a 1–2 day timebox.
+
+---
+## Phase 2: agent, tools, memory
+
+## D16. Our own code executes tools; LangGraph only orchestrates
+The graph's `tools` node calls our executor instead of LangChain's tool runtime. That makes four things explicit and testable:
+- zod validation, with errors returned to the model as structured `invalid_arguments` results instead of exceptions
+- the trusted `ToolContext` (user id from the session)
+- per-tool timeouts and timing
+- reads run in parallel, writes in order
+
+**Trade-off:** we give up some LangChain conveniences, such as callback tracing of tool runs. We replace them with our own run and tool-call records.
+
+## D17. Tool arguments can never carry identity
+Every tool schema is `.strict()` and has no `userId`. A smuggled `{"userId": "U002"}` is rejected as invalid, not ignored. The chat API body is strict in the same way. The user id comes only from the signed HS256 cookie (`jose`), and production refuses to start sessions without a real `SESSION_SECRET`.
+
+## D18. Tools return pre-formatted figures and no raw integers
+Tool output contains strings such as "₹12 Cr" and "71.38%". The model copies them and has nothing to do arithmetic on. The property index in the system prompt deliberately contains **no** numbers, so any numeric answer needs a tool call. This is enforced by a test.
+**Trade-off:** slightly larger tool payloads.
+
+## D19. Tool budget: 5 rounds, then one call without tools, then a deterministic stop
+After 5 tool rounds, the model is called once more with no tools and told to answer from what it has. If it still asks for tools, which only a misbehaving provider would do, the `limit` node ends the turn with a fixed reply and flags the conversation. The recursion limit is set from the same constant.
+
+## D20. Timeouts that cannot be garbage-collected
+`AbortSignal.any([parent, AbortSignal.timeout(ms)])` failed to fire in our tests against a hung provider. The combined signal is held only weakly, so when the pending call is reachable only through its own abort listener, the whole cycle can be collected and the timeout never fires.
+
+`createDeadline` instead uses an `AbortController` driven by a `setTimeout` that holds a strong reference. `raceAbort` also rejects even if a provider SDK ignores the signal.
+
+Two layers of timeout:
+- per model call (default 20 s), which triggers fallback
+- per turn (default 50 s, under Vercel's 60 s function limit), which produces a safe reply
+
+## D21. Fallback policy
+Any failure of the primary model triggers exactly one attempt on the fallback model: timeout, 429, 5xx, network error, or a non-AI response. Both attempts are recorded. Retries inside the SDK are disabled (`maxRetries: 0`) so that latency stays bounded and visible.
+**Trade-off:** we don't retry the primary model on a brief glitch.
+
+## D22. Memory = bounded transcript + structured state
+- **Transcript:** the last 30 messages. The window always starts at a user message, so a tool result is never separated from its call. Old tool payloads are trimmed.
+- **Structured state:** `focusPropertyIds`, `activeScenario`, `pendingActionId` and `consecutiveFailures`.
+- The state is updated by **tool results**, never by the model's text. Follow-ups ("which one", "how would that change it") therefore resolve against backend facts, not the model's memory.
+- **Not done:** summarising long conversations. It isn't needed at this scale (see PERFORMANCE.md, "At higher volume").
+
+## D23. Failure replies never misstate what happened
+- If the turn fails, only the user message and an apology are saved.
+- If a confirmed write had already been committed in that turn, the apology says the change **was saved** instead of the default "your portfolio is unchanged". A test covers this.
+- Model outages and deadline breaches return HTTP 200 with a safe reply and `status: "error"`, not a 500, and flag the conversation for attention.
+
+## D24. Dev stub model and in-memory store as defaults
+With no API key and no `DATABASE_URL`, the app still runs end to end: real graph, tools, analytics and persistence interface, with a keyword router in place of an LLM. Its replies are prefixed `[dev stub — no LLM configured]` so nobody mistakes them for agent output.
+**Trade-off:** in-memory data is per process and resets on restart. Postgres is required for any shared or durable deployment.
+
+## D25. The Confirm button skips the LLM
+`POST /api/chat/actions` confirms or cancels a pending action deterministically, with no model call. It is faster and cheaper, and prompt injection cannot affect it. The LLM path (the user typing "yes") is still supported, with the same-turn and affirmation checks from D11.

@@ -2,13 +2,23 @@
 // The transaction snapshots state and restores it if fn throws, so tests can rely on atomicity.
 
 import type { Property, UserProfile } from "@/domain/types";
-import type { PendingActionRecord, Stores } from "./types";
+import type {
+  AgentRunRecord,
+  ConversationRecord,
+  MessageRecord,
+  PendingActionRecord,
+  Stores,
+  ToolCallRecord,
+} from "./types";
 
 interface MemoryState {
   users: UserProfile[];
   properties: Property[];
   pendingActions: PendingActionRecord[];
   audits: Array<{ propertyId: string; userId: string; action: string; pendingActionId: string }>;
+  conversations: ConversationRecord[];
+  messages: MessageRecord[];
+  runs: Array<{ run: AgentRunRecord; toolCalls: ToolCallRecord[] }>;
 }
 
 export interface MemoryStores extends Stores {
@@ -21,6 +31,9 @@ export function createMemoryStores(seed: { users: UserProfile[]; properties: Pro
     properties: structuredClone(seed.properties),
     pendingActions: [],
     audits: [],
+    conversations: [],
+    messages: [],
+    runs: [],
   };
   let seq = 0;
   const nextId = (prefix: string) => `${prefix}${String(++seq).padStart(4, "0")}`;
@@ -89,6 +102,54 @@ export function createMemoryStores(seed: { users: UserProfile[]; properties: Pro
         a.status = to;
         a.resolvedAt = at;
         return true;
+      },
+    },
+    conversations: {
+      async create(userId, now) {
+        const c: ConversationRecord = {
+          id: nextId("C"),
+          userId,
+          state: {},
+          needsAttention: false,
+          attentionReason: null,
+          createdAt: now,
+          lastMessageAt: now,
+        };
+        state.conversations.push(c);
+        return clone(c);
+      },
+      async get(userId, conversationId) {
+        return clone(state.conversations.find((c) => c.id === conversationId && c.userId === userId) ?? null);
+      },
+      async listByUser(userId) {
+        return clone(
+          state.conversations
+            .filter((c) => c.userId === userId)
+            .sort((a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime()),
+        );
+      },
+      async recentMessages(userId, conversationId, limit) {
+        if (!state.conversations.some((c) => c.id === conversationId && c.userId === userId)) return [];
+        // Array order is insertion order, which is the conversation's sequence.
+        return clone(state.messages.filter((m) => m.conversationId === conversationId).slice(-limit));
+      },
+      async appendTurn(userId, conversationId, turn) {
+        const c = state.conversations.find((x) => x.id === conversationId && x.userId === userId);
+        if (!c) throw new Error(`Conversation ${conversationId} not found for user`);
+        for (const m of turn.messages) {
+          state.messages.push({ ...clone(m), id: nextId("M"), conversationId, createdAt: turn.now });
+        }
+        c.state = clone(turn.state);
+        c.lastMessageAt = turn.now;
+        if (turn.attentionReason) {
+          c.needsAttention = true;
+          c.attentionReason = turn.attentionReason;
+        }
+      },
+    },
+    runs: {
+      async record(run, toolCalls) {
+        state.runs.push(clone({ run, toolCalls }));
       },
     },
     async transaction(fn) {

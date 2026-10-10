@@ -5,40 +5,70 @@
 ```mermaid
 flowchart LR
   subgraph Browser
-    Chat["/chat — WhatsApp-style UI<br/>(planned)"]
-    Admin["/admin — ops dashboard<br/>(planned)"]
+    Chat["/chat — WhatsApp-style UI<br/>(planned, Phase 3)"]
+    Admin["/admin — ops dashboard<br/>(planned, Phase 4)"]
   end
 
-  subgraph Next["Next.js app (Vercel)"]
-    API["POST /api/chat<br/>session cookie → userId<br/>(planned)"]
-    Graph["LangGraph agent loop<br/>agent ⇄ tools, step cap, fallback<br/>(planned)"]
-    Tools["Tools (zod schemas, userId injected)<br/>(planned)"]
-    Domain["Domain core ✅<br/>analytics · scenario · money<br/>normalise · location · validation"]
-    Actions["Propose → confirm service ✅"]
-    Stores["User-scoped stores ✅<br/>Prisma | in-memory"]
+  subgraph Next["Next.js app (Node runtime)"]
+    Session["/api/session<br/>signed HTTP-only cookie"]
+    API["POST /api/chat<br/>strict body · cookie → userId<br/>rate limit"]
+    Btn["POST /api/chat/actions<br/>Confirm/Cancel — no LLM"]
+    Svc["chatService<br/>load history + state + portfolio<br/>turn deadline · persist · telemetry"]
+    Graph["LangGraph<br/>agent ⇄ tools · max 5 rounds<br/>final no-tools call · limit node"]
+    Router["Model router<br/>primary → fallback<br/>per-call timeout"]
+    Tools["9 tools<br/>strict zod · trusted ToolContext<br/>structured errors"]
+    Domain["Domain core<br/>analytics · scenario · money<br/>normalise · location · validation"]
+    Actions["Propose → confirm service"]
+    Stores["User-scoped stores<br/>Prisma | in-memory"]
   end
 
-  LLM[("OpenRouter<br/>primary + fallback model")]
-  DB[("PostgreSQL / Neon<br/>users · properties · conversations<br/>runs · tool calls · pending actions · audit")]
+  LLM[("OpenRouter<br/>or dev stub (no key)")]
+  DB[("PostgreSQL / Neon<br/>or in-memory")]
 
-  Chat --> API --> Graph
-  Graph <--> LLM
+  Chat --> Session
+  Chat --> API --> Svc --> Graph
+  Chat --> Btn --> Actions
+  Graph --> Router <--> LLM
   Graph --> Tools --> Domain
   Tools --> Actions --> Stores
-  Tools --> Stores --> DB
+  Tools --> Stores
+  Svc --> Stores --> DB
   Admin --> DB
 ```
 
-## Request flow (target design)
+## One turn
 
-1. The chat UI sends a user message. The server reads `userId` from a signed, HTTP-only cookie, never from the request body or the model.
-2. The server loads recent messages and the backend-owned conversation state: focus property ids, active scenario, pending action.
-3. LangGraph runs the model with the tool list. Tool calls are validated by zod, executed with the session's `userId`, and timed.
-4. Every number comes from deterministic domain functions. Writes become pending actions that the user must confirm.
-5. Messages, the run's latency and cost breakdown, and tool calls are persisted. The conversation is flagged for attention on errors or handoff.
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant API as /api/chat
+  participant S as chatService
+  participant G as LangGraph
+  participant M as Model (primary/fallback)
+  participant T as Tools
+  participant DB as Stores
+  U->>API: {message, conversationId?} + cookie
+  API->>S: userId (from cookie), message
+  S->>DB: conversation (scoped), last 30 msgs, state, properties
+  S->>G: history + system prompt (rules, numberless index, focus, scenario, pending)
+  loop at most 5 tool rounds
+    G->>M: messages + tool specs
+    M-->>G: tool calls
+    G->>T: validate (zod) + execute with trusted userId
+    T->>DB: scoped reads / staged writes
+    T-->>G: pre-formatted results or structured errors
+  end
+  G->>M: messages (+ tools unless budget spent)
+  M-->>G: final answer
+  S->>DB: append turn + state + attention flag (atomic)
+  S->>DB: run telemetry (spans, LLM calls, tool calls)
+  S-->>U: reply, pendingAction card?, hypothetical?, telemetry
+```
 
 ## Key invariants (enforced in code, covered by tests)
 
-- Every store query is filtered by `userId`. Another user's record looks the same as a record that does not exist.
-- Scenarios run on a cloned portfolio and are tagged `hypothetical: true`. They have no path to the database.
-- A write requires a pending action, and confirmation happens in a later turn with a clear yes or a button click. Writes are transactional and use optimistic locking.
+- **User scoping.** The user id comes only from the signed cookie. Tool and API schemas are strict, so an injected `userId` is rejected. Every store query filters by `userId`, so another user's record looks the same as one that doesn't exist.
+- **Numbers.** Every figure comes from `src/domain`. Tools return pre-formatted strings, and the prompt's property index has no numbers.
+- **Hypotheticals.** Scenarios run on a cloned portfolio and are tagged `hypothetical: true`. They have no path to the database.
+- **Writes.** Every write needs a pending action. Confirmation happens in a later turn, with either a clear yes or the button, which never calls the LLM. Writes are transactional and use optimistic locking.
+- **Bounded execution.** At most 5 tool rounds. Each model call has its own timeout and falls back once; the turn has an overall deadline. The user always gets a reply.
