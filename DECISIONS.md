@@ -366,3 +366,33 @@ The `changePct` path has **not** been exercised with Gemini or OpenRouter. It is
   - no case that passed for the previous stub now fails.
 
 **Trade-off:** each new phrasing is another regular expression, so wording outside the patterns still falls back to the help message. The real fix for open-ended questions is a real model.
+
+## D55. Stub property updates through the existing propose → confirm path; live-site fixes (2026-10-11)
+On the deployed stub, "Update P001's annual rent to ₹80 lakh per year" got the generic help message. The stub now routes explicit update instructions to the **same tools the agent uses**, with no second write path:
+- **Proposing:**
+  - `propose_property_update` validates the change, shows current → new from the backend diff, and creates a pending action. Nothing is saved at this point.
+  - The amount is parsed by the domain's money grammar: `parseMoneyText` returns `{amount, unit}`, and `parseInrText` is now built on it with unchanged behaviour. The backend converts to rupees.
+- **Confirming:**
+  - A later clean "yes" calls `confirm_pending_action`.
+  - The backend still checks the affirmation, the user, the conversation, expiry, and the version (optimistic locking), and writes the audit row.
+  - The Confirm button path is unchanged.
+- **Cancelling:** "cancel" calls `cancel_pending_action`.
+- **Other users' ids** are reported as not found, with no proposal and no data.
+- **Missing or ambiguous requests:** if the property, the field or the new amount is missing, the stub asks **one** clarifying question. Like all help text, the question contains no figures and no ids.
+- **Only instructions trigger an update:** the verb must lead, as in "Update…" or "Please set…". So "How would that change my portfolio?" stays a what-if follow-up, and what-ifs never propose or write.
+
+**Fixed at the same time:**
+- **Tool-call id collisions.** The stub's ids came from a per-process counter, which restarts on each serverless cold start, while the conversation history is reloaded from Postgres. A new id could therefore equal an old one, and the formatter picked the old call. On the live site this gave "That part of your portfolio is 71.38%…" instead of "Retail is 71.38%…". Ids are now random UUIDs, and the latest matching call wins.
+- **The ROI pattern.** The "roi" alternative in the appreciation regex had been written with literal backspace characters, from a shell-escaping slip, instead of word boundaries. So "What's my ROI?" was not recognised. The pattern is restored, and the repository was scanned for other control characters; none remain.
+
+**Measured** (`npm run eval:stub`, mock, 2026-10-10 UTC, uncommitted tree on top of `fe57eb4`):
+- 23/40 cases;
+- numeric faithfulness 35/35;
+- proposal / no proposal 13/14;
+- clarification 2/7;
+- **0 safety violations**;
+- against `fe57eb4`, 0 checks worse and 10 better.
+
+G2's clarification pass at `fe57eb4` had been incidental (the help text contained a "?"). It now passes because the stub asks a real question. None of this was exercised with Gemini or OpenRouter.
+
+**Trade-off:** update parsing is still pattern-based. It covers one property and one field per message, with an absolute amount; adding properties and percentage-based real changes are left to a real model.

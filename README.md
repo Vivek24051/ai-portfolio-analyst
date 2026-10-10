@@ -127,18 +127,23 @@ Without `OPENROUTER_API_KEY` (the default, and how this project was built and ev
 - **follow-ups on the previous result**: "Which of those earns more annual rent?" ranks the properties from the previous answer. It reads them from the same `FOCUS` line in the system prompt that a real model gets;
 - **what-ifs**: "What if the rent of P001 increases by 10%?", "What if I exclude the Bandra property?", "How would that change my portfolio?". The percentage goes to `run_scenario` as `changePct`, and the backend computes the new figure. The reply is labelled hypothetical, and nothing is saved;
 - **appreciation / ROI**: it says plainly that these can't be calculated (no purchase dates; purchase prices missing) and lists the gaps. The current value is shown only as context.
+- **real updates, via the same propose → confirm path as the agent**: "Update P001's annual rent to ₹80 lakh per year" (also current value or purchase price). It calls `propose_property_update`, which shows current → new and saves **nothing**. A later "yes" (or the Confirm button) saves through `confirm_pending_action`, which re-checks affirmation, user, conversation, expiry and version, and writes the audit row. "Cancel" discards the change. Another user's id is reported as not found. If the property, the figure or the new amount is missing or ambiguous, the stub asks one clarifying question instead of guessing.
 
 Replies use fixed templates (`src/agent/stubFormat.ts`), prefixed `[dev stub — template reply, no LLM]`. Figures in template replies are copied verbatim from the tool output. It can stream word by word (`DEV_STUB_STREAM_DELAY_MS`, default 12 ms) so the streaming UI can be demonstrated.
 
 **What it does not do:**
 - Understand wording outside its patterns. Anything else gets a help message.
 - Choose freely between all nine tools.
-- Ask clarifying questions.
-- Propose or confirm property changes.
+- Ask clarifying questions, except the fixed ones for incomplete update requests.
+- Add new properties, change several properties at once, or apply a percentage as a real change. Percentages only work in what-ifs.
 - Compare arbitrary groups (e.g. residential vs commercial).
 - Write natural-language answers.
 
 **Help text carries no figures or ids.** Unrecognised messages get a generic help reply with placeholders such as "<property>" and "<n>%". It contains no example figures, which the faithfulness check would flag, and no example property ids, which could belong to another user. An earlier version of these changes broke this rule, and "best rental yield" was routed as a rent ranking. Both were caught by `npm run eval:stub` and fixed. Regression tests are in `tests/stubFormat.test.ts`.
+
+**Fixed after the first deployment** (tests in `tests/stubUpdates.test.ts`):
+- **Tool-call ids could collide.** The stub's ids came from a per-process counter, which restarts on every serverless cold start, while the conversation history is reloaded from the database. On the live site, "How much of my portfolio is retail?" was answered "That part of your portfolio is 71.38%…" because an older call with the same id was picked. Ids are now random, and the latest match wins.
+- **"What's my ROI?" was not recognised** as an appreciation question, because a regex had been written with literal control characters instead of `\b`.
 
 The chat UI and admin pages show a banner whenever the stub is active.
 
@@ -345,9 +350,10 @@ The oracle and perturbed controls also run inside `npm test` (`tests/eval.test.t
 | Oracle (must pass) | 40/40 | 34/34 | 7/7 | 0 |
 | Perturbed oracle (falsified figures; must be caught) | 12/40 | 1/34 | 7/7 | 0 |
 | Dev stub, earlier version (keyword router; must be caught) — historical, commit `76a9571` | 17/40 | 31/31 (copies tool figures verbatim) | 0/7 | 0 |
-| Dev stub, current working tree (re-run 2026-10-10 UTC) | 20/40 | 33/33 | 2/7 | 0 |
+| Dev stub at commit `fe57eb4` (first deployed version) — historical | 20/40 | 33/33 | 2/7 | 0 |
+| Dev stub, current working tree with property updates (re-run 2026-10-10 UTC) | 23/40 | 35/35 | 2/7 | 0 |
 
-The current stub handles more questions (share, follow-ups, what-ifs), but it is still a keyword router and remains a negative control. An intermediate version, whose help text contained example ids and percentages, measured 8 safety flags and 16 unsupported figures. That was fixed before this result. Details: [docs/eval/dev-stub.md](docs/eval/dev-stub.md).
+The current stub handles more questions (share, follow-ups, what-ifs, propose → confirm updates), but it is still a keyword router and remains a negative control. Against `fe57eb4`, no grader check got worse and 10 got better. R006, W1 and W2 (property updates) now pass. An intermediate version, whose help text contained example ids and percentages, measured 8 safety flags and 16 unsupported figures. That was fixed before this result. Details: [docs/eval/dev-stub.md](docs/eval/dev-stub.md).
 
 The runner also has an `--mode openrouter` for a real model. It is **not used** in this free-only submission and refuses to start without explicit opt-in flags and spend caps ([PERFORMANCE.md §5](PERFORMANCE.md)).
 
@@ -449,7 +455,7 @@ Setup before presenting:
 | 1:00–3:00 | Chat at `localhost:3000`. **With Gemini:** Rahul → "What does my portfolio look like?" → "Tell me about my retail properties" → "Which one is performing better?" → "What if I exclude the Bandra property?" (Hypothetical label) → "Change my Bandra retail property value to ₹12.5 crore" (Confirm card). **With the dev stub:** "portfolio overview", "show my retail properties", and Priya → "Show me my properties in Mumbai" | Streaming tool steps; figures come from tools (₹29.7 Cr); follow-up context; hypothetical vs. real; nothing is saved without Confirm; Alibaug excluded from Mumbai |
 | 3:00–4:30 | `/admin` → the conversation just created → execution trace | Spans, model and tool calls, the numeric-faithfulness result, "—" for tokens and cost the stub doesn't report; Basic auth on every admin page and API |
 | 4:30–6:30 | `SOUL.md` and the code: `src/agent/tools.ts`, `src/server/services/propertyActions.ts`, `src/domain/scenario.ts` | Strict schemas with no `userId`; propose → confirm (same-turn self-confirm is blocked); hypotheticals run on a clone; user scoping |
-| 6:30–8:30 | Terminal: `npm test` (355 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
+| 6:30–8:30 | Terminal: `npm test` (368 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
 | 8:30–10:00 | `PERFORMANCE.md` §2, §6, §7 | Measured: about 4 ms server overhead per turn and about 10 ms over local HTTP. Tool schemas are 83% of input tokens. **Not measured:** real LLM, Postgres, deployment. Next steps: prompt caching, a queue for WhatsApp, shared rate limits |
 
 ## External dependencies

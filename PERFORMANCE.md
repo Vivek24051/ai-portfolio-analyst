@@ -82,18 +82,18 @@ Golden set: **40 cases, 50 turns** across 9 categories (§3). The scores validat
 
 \* The dev stub copies figures verbatim from tool output (first as raw JSON, then through fixed reply templates; the scores were identical both ways), so its numbers trivially trace to tool output. This is why a separate figure-perturbing control is needed.
 
-**The dev-stub column is historical** (stub at commit `76a9571`). The stub has since been extended with share questions, follow-ups on the previous result, percentage what-ifs and an explicit appreciation answer. A re-run on the current working tree (2026-10-10 UTC, [docs/eval/dev-stub.md](docs/eval/dev-stub.md)) gave:
-- cases: 20/40;
-- tool selection: 27/42;
-- argument accuracy: 9/20;
-- expected figures: 13/23;
-- numeric faithfulness: 33/33;
+**The dev-stub column is historical** (stub at commit `76a9571`). The stub has since been extended with share questions, follow-ups on the previous result, percentage what-ifs, an explicit appreciation answer and propose → confirm property updates. A re-run on the current working tree (2026-10-10 UTC, [docs/eval/dev-stub.md](docs/eval/dev-stub.md)) gave:
+- cases: 23/40;
+- tool selection: 30/42;
+- argument accuracy: 11/20;
+- expected figures: 15/23;
+- numeric faithfulness: 35/35;
 - clarification: 2/7;
-- proposals: 10/14;
+- proposals: 13/14;
 - hypothetical labelling: 3/5;
 - **safety violations: 0**.
 
-An intermediate version of the change measured 8 safety flags and 16 unsupported figures, all from help text containing example ids and percentages, and misrouted "best rental yield" as a rent ranking. Both were fixed, and the run above is after the fix. The stub is still a keyword router and remains a negative control; the oracle and perturbed columns are unaffected.
+The first deployed version (`fe57eb4`) measured 20/40. An intermediate version before that measured 8 safety flags and 16 unsupported figures, all from help text containing example ids and percentages, and misrouted "best rental yield" as a rent ranking. Both were fixed before `fe57eb4`. The stub is still a keyword router and remains a negative control; the oracle and perturbed columns are unaffected.
 
 The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or % figure, so there was nothing to falsify. That's correct behaviour, not a gap in the check.
 

@@ -8,7 +8,7 @@ const LABEL = "[dev stub — template reply, no LLM]";
 
 /** Questions about gains over time. The data has no purchase dates, so these get an honest "can't". */
 export const APPRECIATION_QUESTION =
-  /apprecia|roi|return on (my )?invest|capital gain|since (i |we )?(bought|purchas)|purchase price|(gain(ed)?|profit) since/i;
+  /apprecia|\broi\b|return on (my )?invest|capital gain|since (i |we )?(bought|purchas)|purchase price|(gain(ed)?|profit) since/i;
 
 /** What the stub knows about the turn besides the tool output: the question and the call's arguments. */
 export interface StubFormatHint {
@@ -173,6 +173,36 @@ function formatScenario(r: Json): string | null {
   return parts.join("\n\n");
 }
 
+/** A staged change (not saved): the diff exactly as the backend produced it, then how to confirm. */
+function formatProposal(r: Json, args: Json | undefined): string | null {
+  const id = args?.propertyId ?? r.propertyId;
+  switch (r.status) {
+    case "proposed":
+      return [
+        "**Proposed change — not saved yet.**",
+        (r.diff ?? []).map((d: Json) => `- ${r.propertyId ?? "New property"} · ${d.label}: ${d.before ?? "—"} → **${d.after}**`).join("\n"),
+        "Reply **yes** to save it or **cancel** to discard it (or use the buttons below). Nothing changes until you confirm, and the proposal expires if left unconfirmed.",
+      ].join("\n\n");
+    case "not_found":
+      // Same wording whether the id is unknown or another user's: nothing about it is revealed.
+      return `I couldn't find ${id ?? "that property"} in your portfolio, so nothing was changed.`;
+    case "invalid":
+    case "needs_info":
+      return `I couldn't propose that change: ${[...(r.errors ?? []), ...(r.missing ?? []).map((m: string) => `missing ${m}`)].join("; ")}. Nothing was changed.`;
+    default:
+      return null;
+  }
+}
+
+function formatConfirmation(r: Json): string {
+  if (r.status === "confirmed" && r.property) return `**Saved.** ${r.property.id} is updated:\n\n${propertyLine(r.property)}`;
+  return `Nothing was saved: ${r.message ?? r.status}`;
+}
+
+function formatCancellation(r: Json): string {
+  return r.status === "cancelled" ? "Cancelled — nothing was changed." : "There was no pending change to cancel, so nothing was changed.";
+}
+
 /** Turns one tool result into readable text; falls back to a short notice for unknown shapes. */
 export function formatToolResultForStub(toolName: string | undefined, content: string, hint: StubFormatHint = {}): string {
   let r: Json;
@@ -189,6 +219,9 @@ export function formatToolResultForStub(toolName: string | undefined, content: s
   else if (toolName === "portfolio_analytics" && r.wholePortfolio && r.totals) body = formatShare(r, hint.args);
   else if (toolName === "portfolio_analytics") body = formatAnalytics(r);
   else if (toolName === "search_properties") body = formatSearch(r);
+  else if (toolName === "propose_property_update" && formatProposal(r, hint.args)) body = formatProposal(r, hint.args)!;
+  else if (toolName === "confirm_pending_action") body = formatConfirmation(r);
+  else if (toolName === "cancel_pending_action") body = formatCancellation(r);
   else body = (toolName === "run_scenario" ? formatScenario(r) : null) ?? `The ${toolName ?? "tool"} step finished.`;
   return `${LABEL}\n\n${body}`;
 }

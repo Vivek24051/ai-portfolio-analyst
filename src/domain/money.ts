@@ -54,15 +54,24 @@ const UNIT_WORDS: Array<[RegExp, MoneyUnit]> = [
  * Used for CSV/test inputs and deterministic fallbacks; returns null if not parseable.
  */
 export function parseInrText(text: string): number | null {
+  const money = parseMoneyText(text);
+  return money ? toInr(money) : null;
+}
+
+/**
+ * Same grammar as parseInrText, but returns the {amount, unit} the tools accept instead of
+ * converting, so callers (e.g. the dev stub) never multiply by 10^5 / 10^7 themselves.
+ */
+export function parseMoneyText(text: string): Money | null {
   const cleaned = text.trim().replace(/^(₹|rs\.?|inr)\s*/i, "");
   const match = cleaned.match(/^([\d,]*\.?\d+)\s*([a-z]+)?\.?$/i);
   if (!match) return null;
   const amount = Number(match[1]!.replace(/,/g, ""));
   if (!Number.isFinite(amount)) return null;
   const word = match[2];
-  if (!word) return toInr({ amount, unit: "INR" });
+  if (!word) return { amount, unit: "INR" };
   const unit = UNIT_WORDS.find(([re]) => re.test(word))?.[1];
-  return unit ? toInr({ amount, unit }) : null;
+  return unit ? { amount, unit } : null;
 }
 
 /** Indian-style display: ₹12.5 Cr, ₹24 L, ₹45,000. */
