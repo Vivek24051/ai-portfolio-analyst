@@ -68,17 +68,18 @@ describe("unchanged behaviour when LLM_PROVIDER is omitted or explicit", () => {
     expect(createRouter(loadAgentConfig(env({}))).modelMode).toBe("dev-stub");
   });
 
-  it("omitted with an OpenRouter key → OpenRouter (legacy rule; constructing the client makes no request)", () => {
+  // OpenRouter ids must now end in ":free" unless OPENROUTER_ALLOW_PAID=true (see providerFallback.test.ts).
+  it("omitted with an OpenRouter key and a :free model → OpenRouter (legacy rule; constructing the client makes no request)", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
-    const r = createRouter(loadAgentConfig(env({ OPENROUTER_API_KEY: "o", LLM_PRIMARY_MODEL: "m" })));
+    const r = createRouter(loadAgentConfig(env({ OPENROUTER_API_KEY: "o", LLM_PRIMARY_MODEL: "vendor/model:free" })));
     expect(r.modelMode).toBe("openrouter");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("explicit gemini / openrouter select their provider", () => {
     expect(createRouter(loadAgentConfig(env({ LLM_PROVIDER: "gemini", ...BOTH_KEYS }))).modelMode).toBe("gemini");
-    expect(createRouter(loadAgentConfig(env({ LLM_PROVIDER: "openrouter", ...BOTH_KEYS }))).modelMode).toBe("openrouter");
+    expect(createRouter(loadAgentConfig(env({ LLM_PROVIDER: "openrouter", ...BOTH_KEYS, LLM_PRIMARY_MODEL: "vendor/model:free" }))).modelMode).toBe("openrouter");
   });
 
   it("explicit openrouter without its key → stub, not another provider", () => {

@@ -15,6 +15,10 @@ export interface LlmCallRecord {
   ok: boolean;
   error: string | null;
   isFallback: boolean;
+  /** Provider account ("gemini", "openrouter", "stub"); null = not recorded (older runs, test fakes). */
+  provider?: string | null;
+  /** This call was the last-resort dev stub, after the real models failed. */
+  lastResort?: boolean;
   withTools: boolean;
   /** null = provider did not report it (NOT zero). */
   promptTokens: number | null;

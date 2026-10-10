@@ -228,6 +228,8 @@ function normaliseLlmCall(c: Partial<LlmCallRecord>): LlmCallRecord {
     ok: c.ok ?? false,
     error: c.error ? redactSecrets(c.error) : null,
     isFallback: c.isFallback ?? false,
+    provider: c.provider ?? null,
+    lastResort: c.lastResort ?? false,
     withTools: c.withTools ?? false,
     promptTokens: c.promptTokens ?? null,
     completionTokens: c.completionTokens ?? null,

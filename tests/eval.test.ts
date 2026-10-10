@@ -87,10 +87,40 @@ describe("graders", () => {
 describe("paid-run spend guards (no network)", () => {
   const env = (v: Record<string, string>) => v as unknown as NodeJS.ProcessEnv;
 
+  const ALL_FLAGS = ["--confirm-paid", "--max-calls", "10", "--max-cost-usd", "0.5"];
+  const UNLOCKED = { EVAL_ALLOW_PAID: "1", OPENROUTER_API_KEY: "k" };
+
   it("refuses unless every guard is present", () => {
     expect(() => assertPaidAllowed(env({}), [])).toThrow(/EVAL_ALLOW_PAID=1, --confirm-paid, OPENROUTER_API_KEY, LLM_PRIMARY_MODEL, --max-calls N, --max-cost-usd X/);
-    const ok = assertPaidAllowed(env({ EVAL_ALLOW_PAID: "1", OPENROUTER_API_KEY: "k", LLM_PRIMARY_MODEL: "m" }), ["--confirm-paid", "--max-calls", "10", "--max-cost-usd", "0.5"]);
-    expect(ok).toEqual({ apiKey: "k", model: "m", maxCalls: 10, maxCostUsd: 0.5 });
+    const ok = assertPaidAllowed(env({ ...UNLOCKED, LLM_PRIMARY_MODEL: "vendor/model:free" }), ALL_FLAGS);
+    expect(ok).toEqual({ apiKey: "k", model: "vendor/model:free", maxCalls: 10, maxCostUsd: 0.5 });
+  });
+
+  it("enforces the app's free-only OpenRouter rule: non-free ids are refused unless explicitly opted in", () => {
+    const freeOnlyError = /OpenRouter model id ending in ":free"/;
+    // Non-free id, every other guard present, opt-in absent or not exactly "true"/"1" → refused.
+    for (const optIn of [undefined, "false", "yes", "on", ""]) {
+      const vars = { ...UNLOCKED, LLM_PRIMARY_MODEL: "vendor/paid-model", ...(optIn === undefined ? {} : { OPENROUTER_ALLOW_PAID: optIn }) };
+      expect(() => assertPaidAllowed(env(vars), ALL_FLAGS)).toThrow(freeOnlyError);
+    }
+    expect(() => assertPaidAllowed(env({ ...UNLOCKED, LLM_PRIMARY_MODEL: "vendor/x:freebie" }), ALL_FLAGS)).toThrow(freeOnlyError);
+    // The refusal never echoes the id (a key pasted into the wrong variable must stay private).
+    expect(() => assertPaidAllowed(env({ ...UNLOCKED, LLM_PRIMARY_MODEL: "sk-or-v1-pastedbymistake0000" }), ALL_FLAGS)).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining("pastedbymistake") }),
+    );
+    // Explicit opt-in allows a paid id — the spend caps are still required.
+    const paid = env({ ...UNLOCKED, LLM_PRIMARY_MODEL: "vendor/paid-model", OPENROUTER_ALLOW_PAID: "true" });
+    expect(assertPaidAllowed(paid, ALL_FLAGS).model).toBe("vendor/paid-model");
+    expect(() => assertPaidAllowed(paid, ["--confirm-paid"])).toThrow(/--max-calls N, --max-cost-usd X/);
+  });
+
+  it("a missing or blank model id is refused; a free id still needs every unlock and both caps", () => {
+    expect(() => assertPaidAllowed(env({ ...UNLOCKED }), ALL_FLAGS)).toThrow(/LLM_PRIMARY_MODEL/);
+    expect(() => assertPaidAllowed(env({ ...UNLOCKED, LLM_PRIMARY_MODEL: "   " }), ALL_FLAGS)).toThrow(/LLM_PRIMARY_MODEL/);
+    const free = { LLM_PRIMARY_MODEL: "vendor/model:free" };
+    expect(() => assertPaidAllowed(env({ OPENROUTER_API_KEY: "k", ...free }), ALL_FLAGS)).toThrow(/EVAL_ALLOW_PAID=1/);
+    expect(() => assertPaidAllowed(env({ ...UNLOCKED, ...free }), ["--max-calls", "10", "--max-cost-usd", "0.5"])).toThrow(/--confirm-paid/);
+    expect(() => assertPaidAllowed(env({ ...UNLOCKED, ...free }), ["--confirm-paid", "--max-calls", "10"])).toThrow(/--max-cost-usd X/);
   });
 
   it("stops after max calls and after the reported cost cap", async () => {

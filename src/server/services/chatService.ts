@@ -132,7 +132,7 @@ export async function handleChatTurn(
     state: structuredClone(state),
     events: newTurnEvents(),
   };
-  const usage = { modelId: null as string | null, usedFallback: false };
+  const usage: { modelId: string | null; usedFallback: boolean; usedLastResort?: boolean } = { modelId: null, usedFallback: false };
   const userMessage = new HumanMessage(input.message);
   const systemPrompt = buildSystemPrompt({ user, properties, state, pendingAction: pending, now });
 
@@ -168,6 +168,8 @@ export async function handleChatTurn(
     if (check.unsupported.length > 0) attention ??= `unsupported_numbers: ${faithfulness.unsupported.slice(0, 5).join(", ")}`;
     const failedTools = recorder.toolCalls.filter((t) => !t.ok).length;
     if (failedTools >= 2) attention ??= `tool_errors: ${failedTools} failed tool calls in one turn`;
+    // A real model was configured but unavailable: the reply is a labelled stub answer. Keep the outage visible.
+    if (usage.usedLastResort) attention ??= "model_degraded: real model unavailable; answered by the dev stub (last resort)";
     if (toolCtx.events.handoff) attention = `handoff (${toolCtx.events.handoff.reason}): ${toolCtx.events.handoff.note}`;
   } catch (e) {
     status = "error";

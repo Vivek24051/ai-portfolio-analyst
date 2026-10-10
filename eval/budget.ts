@@ -1,6 +1,7 @@
 // Spend guards for paid evaluation runs. Defence in depth on top of the OpenRouter key's own
 // credit limit (which is the authoritative cap — see PERFORMANCE.md "Paid evaluation plan").
 
+import { isAllowedOpenRouterModel, openRouterPaidAllowed } from "@/agent/config";
 import { extractCostUsd, type ChatModel } from "@/agent/model";
 
 export class BudgetExceeded extends Error {}
@@ -35,7 +36,11 @@ export interface PaidConfig {
   maxCostUsd: number;
 }
 
-/** All guards must be present; otherwise the paid run is refused before any network activity. */
+/**
+ * All guards must be present; otherwise the real-model run is refused before any network activity.
+ * The model must also pass the app's free-only rule: an OpenRouter id ending in ":free", unless
+ * OPENROUTER_ALLOW_PAID=true (default off). The spend caps apply in every case.
+ */
 export function assertPaidAllowed(env: NodeJS.ProcessEnv, argv: string[]): PaidConfig {
   const arg = (name: string) => {
     const i = argv.indexOf(`--${name}`);
@@ -43,14 +48,17 @@ export function assertPaidAllowed(env: NodeJS.ProcessEnv, argv: string[]): PaidC
   };
   const maxCalls = Number(arg("max-calls") ?? 0);
   const maxCostUsd = Number(arg("max-cost-usd") ?? 0);
+  const model = env.LLM_PRIMARY_MODEL?.trim() ?? "";
   const problems = [
     env.EVAL_ALLOW_PAID !== "1" && "EVAL_ALLOW_PAID=1",
     !argv.includes("--confirm-paid") && "--confirm-paid",
     !env.OPENROUTER_API_KEY && "OPENROUTER_API_KEY",
-    !env.LLM_PRIMARY_MODEL && "LLM_PRIMARY_MODEL",
+    !model && "LLM_PRIMARY_MODEL",
+    // Never echo the id itself: a key pasted into the wrong variable must not reach the console.
+    model && !isAllowedOpenRouterModel(model, openRouterPaidAllowed(env)) && 'an OpenRouter model id ending in ":free" (or the explicit OPENROUTER_ALLOW_PAID=true opt-in)',
     !(maxCalls > 0) && "--max-calls N",
     !(maxCostUsd > 0) && "--max-cost-usd X",
   ].filter(Boolean);
   if (problems.length) throw new Error(`Paid evaluation refused. Missing: ${problems.join(", ")}.`);
-  return { apiKey: env.OPENROUTER_API_KEY!, model: env.LLM_PRIMARY_MODEL!, maxCalls, maxCostUsd };
+  return { apiKey: env.OPENROUTER_API_KEY!, model, maxCalls, maxCostUsd };
 }

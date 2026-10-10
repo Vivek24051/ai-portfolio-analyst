@@ -4,7 +4,8 @@
 //   npm run eval -- --mode perturbed   negative control for numeric faithfulness (oracle with falsified figures)
 //   npm run eval -- --mode dev-stub    negative control (keyword stub, mock) — zero cost
 //   npm run eval -- --mode openrouter --confirm-paid --max-calls 400 --max-cost-usd 2
-//                                      REAL model — paid; refuses to run without all guards
+//                                      REAL model; refuses to run without all guards, and only with a
+//                                      ":free" OpenRouter id unless OPENROUTER_ALLOW_PAID=true (default off)
 //
 // Options: --repeat N (default 1), --cases R001,M1,…, --no-write (skip report files)
 // Output: docs/eval/<mode>.md (committed summary) and eval/results/<mode>-<timestamp>.json (raw, git-ignored).
@@ -17,6 +18,7 @@ import { createDevStubModel } from "@/agent/devStubModel";
 import { createOpenRouterModel, type ChatModel } from "@/agent/model";
 import { buildSeed } from "@/data/seedData";
 import { seedFile } from "@/data/paths";
+import { isAllowedOpenRouterModel, openRouterPaidAllowed } from "@/agent/config";
 import { assertPaidAllowed, budgeted, type Budget } from "./budget";
 import { CASES } from "./cases";
 import { runCase, type CaseResult } from "./harness";
@@ -39,7 +41,8 @@ const CONDITIONS: Record<Mode, string> = {
     "MOCK. Negative control for numeric faithfulness: the oracle with every figure in its replies falsified (+10% on ₹, +3 on %). The faithfulness metric and expected-figure checks should fail; tool/argument checks should still pass. NOT evidence of LLM quality.",
   "dev-stub":
     "MOCK. The model is the keyword dev stub (no LLM). This is a negative control showing the graders detect a weak agent — it is NOT evidence of LLM quality. Timings exclude any model latency.",
-  openrouter: "REAL model via OpenRouter. Paid. See model id and budget in the run log.",
+  openrouter:
+    "REAL model via OpenRouter. Free-only by default (\":free\" model ids); a paid model needs OPENROUTER_ALLOW_PAID=true. Spend caps always apply. See model id and budget in the run log.",
 };
 
 async function main() {
@@ -65,6 +68,8 @@ async function main() {
     model = () => withTokenEstimates(createDevStubModel({ streamDelayMs: 0 }), tokens);
   } else {
     const paid = assertPaidAllowed(process.env, process.argv);
+    // Defence in depth: the same free-only rule as the app, checked again right before the client exists.
+    if (!isAllowedOpenRouterModel(paid.model, openRouterPaidAllowed(process.env))) throw new Error("Refused: non-free OpenRouter model without opt-in.");
     budget = { maxCalls: paid.maxCalls, maxCostUsd: paid.maxCostUsd, calls: 0, costUsd: 0 };
     modelId = paid.model;
     const real = createOpenRouterModel(paid.model, paid.apiKey);

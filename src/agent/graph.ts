@@ -31,7 +31,16 @@ export interface AgentDeps {
   systemPrompt: string;
   turnSignal: AbortSignal;
   /** Filled by the agent node: which model produced the final answer. */
-  usage: { modelId: string | null; usedFallback: boolean; /** Set once the primary fails; later calls this turn skip it. */ primaryFailed?: boolean };
+  usage: {
+    modelId: string | null;
+    usedFallback: boolean;
+    /** Set once the primary fails; later calls this turn skip it. */
+    primaryFailed?: boolean;
+    /** Every model that failed this turn; later calls skip them (per-turn circuit breaker). */
+    failedModelIds?: string[];
+    /** Some answer this turn came from the last-resort stub. */
+    usedLastResort?: boolean;
+  };
   /** Progress events for the client (already wrapped so it can never throw). */
   emit: EmitFn;
 }
@@ -73,13 +82,14 @@ async function agentNode(state: State, config: LangGraphRunnableConfig): Promise
   const system = new SystemMessage(d.systemPrompt + (budgetLeft ? "" : BUDGET_EXHAUSTED_NOTE));
   d.emit({ type: "status", label: state.toolRounds === 0 ? "Thinking…" : "Putting the answer together…" });
   let streamedText = false;
-  const { message, modelId, usedFallback, primaryFailed } = await invokeWithFallback(
+  const { message, modelId, usedFallback, primaryFailed, usedLastResort, failedModelIds } = await invokeWithFallback(
     d.router,
     [system, ...state.messages],
     {
       tools: budgetLeft ? TOOL_SPECS : null,
       turnSignal: d.turnSignal,
       skipPrimary: d.usage.primaryFailed === true,
+      skipModelIds: d.usage.failedModelIds ?? [],
       stream: {
         onDelta: (text) => {
           streamedText = true;
@@ -96,6 +106,8 @@ async function agentNode(state: State, config: LangGraphRunnableConfig): Promise
   d.usage.modelId = modelId;
   d.usage.usedFallback ||= usedFallback;
   if (primaryFailed) d.usage.primaryFailed = true;
+  if (usedLastResort) d.usage.usedLastResort = true;
+  if (failedModelIds.length) d.usage.failedModelIds = [...new Set([...(d.usage.failedModelIds ?? []), ...failedModelIds])];
   const normalised = normaliseToolCalls(message);
   // Text streamed alongside tool calls is a preamble ("let me check…"), not the answer.
   if (streamedText && (normalised.tool_calls?.length ?? 0) > 0) d.emit({ type: "reset" });

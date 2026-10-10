@@ -46,6 +46,13 @@ function subsetLabel(args: Json | undefined): string {
 function formatShare(r: Json, args: Json | undefined): string {
   const t = r.totals;
   const whole = r.wholePortfolio;
+  const ids: string[] = args?.filter?.propertyIds ?? [];
+  if (ids.length && t.properties) {
+    // "What's their combined value?" over the previous result set.
+    const names = ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]!;
+    const rent = t.annualRent ? ` They earn **${t.annualRent}** a year in rent.` : "";
+    return `Combined value of **${names}**: **${t.totalValue}**, which is ${r.shareOfWholePortfolioValue} of your **${whole.totalValue}** portfolio.${rent}`;
+  }
   const label = subsetLabel(args);
   if (!t.properties) {
     return `You have no ${label.toLowerCase()} properties, so they are **${r.shareOfWholePortfolioValue}** of your **${whole.totalValue}** portfolio.`;
@@ -169,7 +176,34 @@ function formatScenario(r: Json): string | null {
       ...(b.grossYieldAllProperties && s.grossYieldAllProperties ? [row("Gross yield", b.grossYieldAllProperties, s.grossYieldAllProperties, r.deltas?.grossYield)] : []),
     ].join("\n"),
   );
+  // Mix by type: each asset class's share of value, before → after, with the tool's percentage-point change.
+  const shareOf = (buckets: Json[] | undefined, label: string) => buckets?.find((x) => x.group === label)?.shareOfValue ?? "none";
+  const mix = Object.entries((r.deltas?.assetClassShare ?? {}) as Record<string, string | null>)
+    .filter(([, delta]) => !unchanged(delta))
+    .map(([key, delta]) => {
+      const label = SUBSET_LABELS[key] ?? key;
+      return `- ${label}: ${shareOf(r.baseline.byAssetClass, label)} → **${shareOf(r.scenario.byAssetClass, label)}** (${delta})`;
+    });
+  if (mix.length) parts.push("**Mix by type** (share of value)", mix.join("\n"));
   parts.push("To make a real change, ask me to update the property; I'll show the change and wait for your confirmation.");
+  return parts.join("\n\n");
+}
+
+/** compare_groups: both groups side by side, then the backend's difference (group A minus group B). */
+function formatComparison(r: Json): string | null {
+  const a = r.groupA;
+  const b = r.groupB;
+  if (!a || !b) return null;
+  const line = (g: Json) =>
+    `- **${g.label}**: **${g.value}** (${g.shareOfPortfolio} of your portfolio) · ${plural(g.count, "property", "properties")} · rent ${g.annualRent}/yr` +
+    (g.grossYield ? ` · gross yield ${g.grossYield}` : "");
+  const d = r.difference ?? {};
+  const parts = [
+    `**${a.label} vs ${b.label}**`,
+    [line(a), line(b)].join("\n"),
+    `Difference (${a.label} minus ${b.label}): value ${d.value}, annual rent ${d.annualRent}${d.grossYield ? `, gross yield ${d.grossYield}` : ""}.`,
+  ];
+  if (r.warning) parts.push(String(r.warning));
   return parts.join("\n\n");
 }
 
@@ -186,17 +220,56 @@ function formatProposal(r: Json, args: Json | undefined): string | null {
     case "not_found":
       // Same wording whether the id is unknown or another user's: nothing about it is revealed.
       return `I couldn't find ${id ?? "that property"} in your portfolio, so nothing was changed.`;
+    case "needs_info": {
+      // One question listing everything the backend says is still missing (no figures are invented).
+      const asks = (r.missing ?? []).map((m: string) => MISSING_FIELD_QUESTIONS[m] ?? m);
+      const list = asks.length > 1 ? `${asks.slice(0, -1).join(", ")} and ${asks.at(-1)}` : asks[0];
+      const errs = (r.errors ?? []).length ? ` (Also: ${r.errors.join("; ")}.)` : "";
+      return `To add this property I still need ${list}. Could you tell me?${errs} Nothing is saved until you confirm the full details.`;
+    }
     case "invalid":
-    case "needs_info":
-      return `I couldn't propose that change: ${[...(r.errors ?? []), ...(r.missing ?? []).map((m: string) => `missing ${m}`)].join("; ")}. Nothing was changed.`;
+      if ((r.errors ?? []).some((e: string) => e.includes("needs its annual rent"))) {
+        // "My Andheri office is now tenanted" without a rent: the backend refused, so ask for it.
+        return `What is the annual rent for **${id}** now? Tell me the yearly amount (for example "<amount> lakh a year") and I'll propose the update for your confirmation. Nothing has been changed.`;
+      }
+      return `I couldn't propose that change: ${(r.errors ?? []).join("; ")}. Nothing was changed.`;
+    case "possible_duplicate": {
+      // Only ids and locations are shown: the candidates' raw figures are not repeated.
+      const c: Json[] = r.candidates ?? [];
+      const names = c.map((p) => `**${p.id}** (${p.location})`).join(", ");
+      return `This looks like your existing ${names}. Did you mean to update ${c.length === 1 ? "that one" : "one of those"}, or is this a separate property? Nothing has been added.`;
+    }
     default:
       return null;
   }
 }
 
+const MISSING_FIELD_QUESTIONS: Record<string, string> = {
+  assetClass: "what type it is (retail, office or residential)",
+  locality: "the locality (neighbourhood)",
+  city: "the city",
+  areaSqft: "its area in square feet",
+  value: "its current estimated value",
+  occupancyStatus: "whether it is tenanted, vacant or self-occupied",
+  annualRent: "the annual rent (as it is tenanted)",
+};
+
 function formatConfirmation(r: Json): string {
-  if (r.status === "confirmed" && r.property) return `**Saved.** ${r.property.id} is updated:\n\n${propertyLine(r.property)}`;
+  if (r.status === "confirmed" && r.property) {
+    const verb = r.action === "CREATE_PROPERTY" ? "is added to your portfolio" : "is updated";
+    return `**Saved.** ${r.property.id} ${verb}:\n\n${propertyLine(r.property)}`;
+  }
   return `Nothing was saved: ${r.message ?? r.status}`;
+}
+
+/** flag_for_human: say exactly what happened — the conversation is flagged; nobody was messaged. */
+function formatHandoff(r: Json): string {
+  if (r.status !== "flagged") return "I couldn't flag this conversation for the team. Please try again.";
+  return (
+    "I've flagged this conversation for the business team: it now appears in their **needs attention** queue with your request. " +
+    "No one is contacted automatically; a team member reviews flagged conversations. I can't give tax, legal or investment advice myself, " +
+    "but I can keep answering questions about your portfolio's figures in the meantime."
+  );
 }
 
 function formatCancellation(r: Json): string {
@@ -219,7 +292,9 @@ export function formatToolResultForStub(toolName: string | undefined, content: s
   else if (toolName === "portfolio_analytics" && r.wholePortfolio && r.totals) body = formatShare(r, hint.args);
   else if (toolName === "portfolio_analytics") body = formatAnalytics(r);
   else if (toolName === "search_properties") body = formatSearch(r);
-  else if (toolName === "propose_property_update" && formatProposal(r, hint.args)) body = formatProposal(r, hint.args)!;
+  else if (toolName === "compare_groups" && formatComparison(r)) body = formatComparison(r)!;
+  else if ((toolName === "propose_property_update" || toolName === "propose_new_property") && formatProposal(r, hint.args)) body = formatProposal(r, hint.args)!;
+  else if (toolName === "flag_for_human") body = formatHandoff(r);
   else if (toolName === "confirm_pending_action") body = formatConfirmation(r);
   else if (toolName === "cancel_pending_action") body = formatCancellation(r);
   else body = (toolName === "run_scenario" ? formatScenario(r) : null) ?? `The ${toolName ?? "tool"} step finished.`;

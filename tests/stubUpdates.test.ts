@@ -188,3 +188,161 @@ describe("dev stub: fixes found on the live deployment", () => {
     expect(r.reply).toContain("**I can't calculate your portfolio's appreciation or ROI.**");
   });
 });
+
+// New properties (R005, G3, W3, W4), status-only updates (W5) and hand-off (F4). Every write still goes
+// through propose_* → explicit confirmation; nothing is created or changed by an unconfirmed message.
+describe("dev stub: new properties through propose → confirm", () => {
+  const R005 = "Add a 3000 sq ft retail property in Indiranagar worth ₹4.2 crore";
+  const countOf = (d: Deps, userId: string) => d.stores.state.properties.filter((p) => p.userId === userId).length;
+  const turn = (d: Deps, userId: string, message: string, conversationId?: string) =>
+    handleChatTurn(d, { userId, message, ...(conversationId ? { conversationId } : {}) });
+
+  it("R005: asks for exactly what the backend says is missing; nothing is proposed", async () => {
+    const d = deps();
+    const before = structuredClone(d.stores.state.properties);
+    const r = await turn(d, "U004", R005);
+    // The city is inferred from U004's own Indiranagar property (P012, Bengaluru) and is shown for
+    // confirmation later; occupancy is the one required detail still missing.
+    expect(d.stores.state.properties.find((p) => p.id === "P012")).toMatchObject({ userId: "U004", locality: "Indiranagar", city: "Bengaluru" });
+    expect(r.reply).toContain("To add this property I still need whether it is tenanted, vacant or self-occupied. Could you tell me?");
+    expect(r.pendingAction).toBeNull();
+    expect(d.stores.state.pendingActions).toHaveLength(0);
+    expect(d.stores.state.properties).toEqual(before);
+    expect(r.needsAttention).toBe(false);
+  });
+
+  it("G3: 'Add a property' with no details asks for every required field, with no figures", async () => {
+    const d = deps();
+    const r = await turn(d, "U004", "Add a property to my portfolio");
+    for (const ask of ["what type it is", "the locality", "the city", "its area in square feet", "its current estimated value", "tenanted, vacant or self-occupied"]) {
+      expect(r.reply).toContain(ask);
+    }
+    expect(r.reply).toContain("Could you tell me?");
+    expect(extractNumbers(r.reply)).toEqual([]);
+    expect(r.pendingAction).toBeNull();
+  });
+
+  it("W4: the follow-up completes the draft → CREATE proposal → nothing saved until 'yes' → created once, audited", async () => {
+    const d = deps();
+    const startCount = countOf(d, "U004");
+    const existingIds = new Set(d.stores.state.properties.map((p) => p.id));
+    const t1 = await turn(d, "U004", R005);
+    const t2 = await turn(d, "U004", "It's in Bengaluru and currently vacant", t1.conversationId);
+    expect(t2.pendingAction).toMatchObject({ type: "CREATE_PROPERTY", propertyId: null });
+    expect(t2.reply).toContain("**Proposed change — not saved yet.**");
+    expect(t2.reply).toContain("New property · Location: — → **Indiranagar, Bengaluru**");
+    expect(countOf(d, "U004")).toBe(startCount); // proposal only
+
+    const t3 = await turn(d, "U004", "yes", t1.conversationId);
+    expect(t3.reply).toContain("is added to your portfolio");
+    expect(countOf(d, "U004")).toBe(startCount + 1);
+    const created = d.stores.state.properties.find((p) => !existingIds.has(p.id))!;
+    expect(created.userId).toBe("U004"); // owned by the signed-in user
+    expect(created).toMatchObject({ city: "Bengaluru", areaSqft: 3000, currentValueInr: 42_000_000, occupancyStatus: "VACANT", annualRentInr: 0, assetClass: "RETAIL" });
+    expect(d.stores.state.audits).toEqual([expect.objectContaining({ propertyId: created.id, userId: "U004", action: "CREATE" })]);
+  });
+
+  it("W4 variant: 'cancel' after the proposal creates nothing", async () => {
+    const d = deps();
+    const startCount = countOf(d, "U004");
+    const t1 = await turn(d, "U004", R005);
+    await turn(d, "U004", "It's in Bengaluru and currently vacant", t1.conversationId);
+    const c = await turn(d, "U004", "cancel", t1.conversationId);
+    expect(c.reply).toContain("Cancelled — nothing was changed.");
+    await turn(d, "U004", "yes", t1.conversationId);
+    expect(countOf(d, "U004")).toBe(startCount);
+    expect(d.stores.state.audits).toHaveLength(0);
+  });
+
+  it("W3: the brief's example is flagged as a near-duplicate of P001 (backend check); 'separate' then proposes", async () => {
+    const d = deps();
+    const t1 = await turn(d, "U001", "I have a 5,000 sq ft retail property in Bandra worth ₹12 Cr. Add it to my portfolio.");
+    expect(t1.reply).toContain("To add this property I still need whether it is tenanted, vacant or self-occupied. Could you tell me?");
+    const t2 = await turn(d, "U001", "It's vacant", t1.conversationId);
+    expect(t2.reply).toContain("This looks like your existing **P001** (Bandra West, Mumbai). Did you mean to update that one, or is this a separate property?");
+    expect(t2.pendingAction).toBeNull();
+    expect(extractNumbers(t2.reply)).toEqual([]); // the candidate's raw figures are not repeated
+    const t3 = await turn(d, "U001", "It's a separate property", t1.conversationId);
+    expect(t3.pendingAction).toMatchObject({ type: "CREATE_PROPERTY" });
+    expect(countOf(d, "U001")).toBe(3); // still only a proposal
+  });
+
+  it("the city of a new locality is inferred only from the user's OWN properties; others' data is never used", async () => {
+    const d = deps();
+    // U003 has no Bandra property (U001 does): no city is inferred and no U001 duplicate is ever shown.
+    const t1 = await turn(d, "U003", "Add a 5000 sq ft retail property in Bandra worth ₹12 Cr");
+    expect(t1.reply).toContain("the city");
+    const t2 = await turn(d, "U003", "It's in Mumbai and vacant", t1.conversationId);
+    expect(t2.reply).not.toContain("P001");
+    expect(t2.pendingAction).toMatchObject({ type: "CREATE_PROPERTY" });
+  });
+
+  it("only the immediately previous turn's draft continues; questions are never merged into a draft", async () => {
+    const d = deps();
+    const t1 = await turn(d, "U004", R005);
+    const q = await turn(d, "U004", "Show my retail properties", t1.conversationId);
+    expect(q.pendingAction).toBeNull();
+    expect(q.reply).toContain("Found");
+    const late = await turn(d, "U004", "It's in Bengaluru and currently vacant", t1.conversationId);
+    expect(late.pendingAction).toBeNull(); // the draft was two turns ago
+    expect(d.stores.state.pendingActions).toHaveLength(0);
+  });
+});
+
+describe("dev stub: status-only updates (W5)", () => {
+  const turn = (d: Deps, userId: string, message: string, conversationId?: string) =>
+    handleChatTurn(d, { userId, message, ...(conversationId ? { conversationId } : {}) });
+
+  it("'now tenanted' without a rent: the backend refuses, the stub asks for the rent, nothing is proposed", async () => {
+    const d = deps();
+    const r = await turn(d, "U001", "My Andheri office is now tenanted");
+    expect(r.reply).toContain("What is the annual rent for **P002** now?");
+    expect(r.pendingAction).toBeNull();
+    expect(d.stores.state.pendingActions).toHaveLength(0);
+    expect(d.stores.state.properties.find((p) => p.id === "P002")!.occupancyStatus).toBe("VACANT");
+  });
+
+  it("the rent in the next message proposes occupancy + rent; saved only after 'yes'", async () => {
+    const d = deps();
+    const t1 = await turn(d, "U001", "My Andheri office is now tenanted");
+    const t2 = await turn(d, "U001", "₹45 lakh a year", t1.conversationId);
+    expect(t2.reply).toContain("- P002 · Occupancy: Vacant → **Tenanted**");
+    expect(t2.reply).toContain("- P002 · Annual rent: ₹0 → **₹45 L**");
+    expect(rentOf(d, "P002")).toBe(0);
+    await turn(d, "U001", "yes", t1.conversationId);
+    expect(rentOf(d, "P002")).toBe(4_500_000);
+    expect(d.stores.state.properties.find((p) => p.id === "P002")!.occupancyStatus).toBe("TENANTED");
+    expect(d.stores.state.audits).toHaveLength(1);
+  });
+
+  it("'now vacant' proposes zero rent explicitly (not saved); an ambiguous property gets a question", async () => {
+    const d = deps();
+    const r = await turn(d, "U001", "My Bandra property is now vacant");
+    expect(r.reply).toContain("- P001 · Annual rent: ₹72 L → **₹0**");
+    expect(rentOf(d, "P001")).toBe(7_200_000);
+    const amb = await turn(deps(), "U003", "My office is now vacant"); // U003 has two offices
+    expect(amb.reply).toMatch(/which one of your properties do you mean\?/);
+    expect(amb.pendingAction).toBeNull();
+  });
+});
+
+describe("dev stub: hand-off to the business team (F4)", () => {
+  it("flags the conversation via flag_for_human and says truthfully that nobody was contacted automatically", async () => {
+    const d = deps();
+    const r = await handleChatTurn(d, { userId: "U001", message: "I want to speak to a human advisor about selling P002 for tax reasons" });
+    expect(r.handoff).toBe(true);
+    expect(r.needsAttention).toBe(true); // visible in the admin queue
+    expect(r.reply).toContain("flagged this conversation for the business team");
+    expect(r.reply).toContain("No one is contacted automatically");
+    expect(r.reply).not.toMatch(/will (call|contact) you|has been contacted|asked a team member to contact/);
+    expect(r.pendingAction).toBeNull();
+    const conv = await d.stores.conversations.get("U001", r.conversationId);
+    expect(conv).toMatchObject({ needsAttention: true, attentionReason: expect.stringContaining("handoff (user_requested_human)") });
+  });
+
+  it("a request for tax advice is flagged as out of scope", async () => {
+    const r = await handleChatTurn(deps(), { userId: "U001", message: "Can you give me tax advice on selling P002?" });
+    expect(r.handoff).toBe(true);
+    expect(r.reply).toContain("can't give tax, legal or investment advice");
+  });
+});

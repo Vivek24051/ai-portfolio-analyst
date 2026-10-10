@@ -18,6 +18,12 @@ export interface ModelInvokeOptions {
 
 export interface ChatModel {
   readonly id: string;
+  /**
+   * Which provider account the model runs on ("gemini", "openrouter", "stub"). Models with the same
+   * provider share a key and credits, so an account error (401/402) on one rules out the others.
+   * Undefined (test fakes) counts as one shared provider, which keeps the original stop-on-401/402.
+   */
+  readonly provider?: string;
   invoke(messages: BaseMessage[], opts: ModelInvokeOptions): Promise<AIMessage>;
   /** Optional token streaming. Must resolve to the same complete message `invoke` would return. */
   stream?(messages: BaseMessage[], opts: ModelInvokeOptions, onDelta: (text: string) => void): Promise<AIMessage>;
@@ -26,6 +32,11 @@ export interface ChatModel {
 export interface ModelRouter {
   primary: ChatModel;
   fallback: ChatModel | null;
+  /**
+   * Tried after primary and fallback have failed: the clearly labelled dev stub (no LLM, no cost),
+   * so a provider outage degrades to template answers instead of an error. Optional.
+   */
+  lastResort?: ChatModel | null;
   callTimeoutMs: number;
 }
 
@@ -56,6 +67,8 @@ export interface OpenRouterOptions {
 
 /** What differs between OpenAI-compatible providers. */
 interface ProviderProfile {
+  /** Provider account label recorded on the model (see ChatModel.provider). */
+  provider: string;
   baseURL: string;
   /** Provider-specific request fields (e.g. OpenRouter usage accounting). */
   modelKwargs?: Record<string, unknown>;
@@ -85,6 +98,7 @@ function createOpenAICompatibleModel(modelId: string, apiKey: string, profile: P
     tools ? client.bindTools(tools, profile.parallelToolCalls ? { parallel_tool_calls: true } : {}) : client;
   return {
     id: modelId,
+    provider: profile.provider,
     async invoke(messages, opts) {
       return (await runnableFor(opts.tools).invoke(messages, { signal: opts.signal })) as AIMessage;
     },
@@ -116,6 +130,7 @@ export function createOpenRouterModel(modelId: string, apiKey: string, options: 
     modelId,
     apiKey,
     {
+      provider: "openrouter",
       baseURL: OPENROUTER_BASE_URL,
       // Ask OpenRouter to include usage accounting (tokens + cost) in responses.
       modelKwargs: { usage: { include: true } },
@@ -136,7 +151,12 @@ export const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com
  * Verified offline against synthetic payloads (tests/gemini.test.ts); live behaviour untested here.
  */
 export function createGeminiModel(modelId: string, apiKey: string, options: OpenRouterOptions = {}): ChatModel {
-  return createOpenAICompatibleModel(modelId, apiKey, { baseURL: GEMINI_OPENAI_BASE_URL, parallelToolCalls: false, streamUsage: false }, options);
+  return createOpenAICompatibleModel(
+    modelId,
+    apiKey,
+    { provider: "gemini", baseURL: GEMINI_OPENAI_BASE_URL, parallelToolCalls: false, streamUsage: false },
+    options,
+  );
 }
 
 /**
@@ -174,10 +194,19 @@ export interface StreamHooks {
 }
 
 /**
- * Calls the primary model with a per-call timeout; on any failure (timeout, 429, 5xx, network,
- * provider error) retries once on the fallback model. Aborts immediately if the whole-turn
- * deadline signal fires. Streams tokens when both the model and the caller support it.
- * Every attempt is recorded (duration, time-to-first-token, tokens, error).
+ * After an account error (401/402) on `failed`, may `next` still be tried? Only when BOTH are labelled
+ * with different providers (a different key and account). Unknown means "possibly the same account",
+ * so it is never retried — the conservative choice for keys and credits.
+ */
+const differentAccount = (failed: ChatModel, next: ChatModel) => !!failed.provider && !!next.provider && failed.provider !== next.provider;
+
+/**
+ * Calls the models in order — primary, fallback, then the last resort (the dev stub) — each with a
+ * per-call timeout. Any failure (timeout, 429, 5xx, network, provider error) moves on to the next.
+ * Account errors (401 bad key / 402 no credits) skip every remaining model on the SAME provider —
+ * same key, same credits, so a retry there cannot help and is never attempted — but a different
+ * provider is still tried. Aborts immediately if the whole-turn deadline fires. Streams tokens
+ * when both the model and the caller support it. Every attempt is recorded.
  */
 export async function invokeWithFallback(
   router: ModelRouter,
@@ -188,23 +217,57 @@ export async function invokeWithFallback(
     stream?: StreamHooks;
     /** Per-turn circuit breaker: once the primary failed in this turn, go straight to the fallback. */
     skipPrimary?: boolean;
+    /** Per-turn circuit breaker, generalised: models that already failed this turn are skipped. */
+    skipModelIds?: readonly string[];
   },
   recorder: RunRecorder,
-): Promise<{ message: AIMessage; modelId: string; usedFallback: boolean; primaryFailed: boolean }> {
-  const attempts: Array<{ model: ChatModel; isFallback: boolean }> = [];
-  if (!(opts.skipPrimary && router.fallback)) attempts.push({ model: router.primary, isFallback: false });
-  if (router.fallback) attempts.push({ model: router.fallback, isFallback: true });
+): Promise<{
+  message: AIMessage;
+  modelId: string;
+  usedFallback: boolean;
+  primaryFailed: boolean;
+  /** The answer came from the last-resort stub (every real model failed or was skipped). */
+  usedLastResort: boolean;
+  /** Models that failed, or were skipped after an account error, during this call (for the caller's per-turn circuit breaker). */
+  failedModelIds: string[];
+}> {
+  type Tier = "primary" | "fallback" | "last_resort";
+  const chain: Array<{ model: ChatModel; tier: Tier }> = [{ model: router.primary, tier: "primary" }];
+  if (router.fallback) chain.push({ model: router.fallback, tier: "fallback" });
+  if (router.lastResort) chain.push({ model: router.lastResort, tier: "last_resort" });
+  const skip = new Set(opts.skipModelIds ?? []);
+  if (opts.skipPrimary) skip.add(router.primary.id);
+  // Never skip everything: the last link of the chain is always tried.
+  let attempts = chain.filter((a, i) => i === chain.length - 1 || !skip.has(a.model.id));
+  if (attempts.length === 0) attempts = [chain.at(-1)!];
+
   let primaryFailed = false;
+  const failedModelIds: string[] = [];
+  const accountFailures: ChatModel[] = [];
   const causes: string[] = [];
 
-  for (const { model, isFallback } of attempts) {
+  for (const { model, tier } of attempts) {
+    const isFallback = tier !== "primary";
     if (opts.turnSignal.aborted) break;
+    if (accountFailures.some((f) => !differentAccount(f, model))) {
+      causes.push(`${model.id}: skipped (account-level error on the same or an unknown provider; same key/credits)`);
+      // Report it to the per-turn circuit breaker too, so a later tool round can't call it with the same key.
+      failedModelIds.push(model.id);
+      continue;
+    }
     const deadline = createDeadline(router.callTimeoutMs, opts.turnSignal);
     const signal = deadline.signal;
     const start = performance.now();
     let ttftMs: number | null = null;
     let streamed = false;
-    const base = { model: model.id, isFallback, withTools: opts.tools !== null, streamed: false };
+    const base = {
+      model: model.id,
+      provider: model.provider ?? null,
+      isFallback,
+      lastResort: tier === "last_resort",
+      withTools: opts.tools !== null,
+      streamed: false,
+    };
     try {
       const callOpts = { tools: opts.tools, signal };
       const work =
@@ -231,11 +294,12 @@ export async function invokeWithFallback(
         completionTokens: usage?.output_tokens ?? null,
         costUsd: extractCostUsd(message),
       });
-      return { message, modelId: model.id, usedFallback: isFallback, primaryFailed };
+      return { message, modelId: model.id, usedFallback: isFallback, primaryFailed, usedLastResort: tier === "last_resort", failedModelIds };
     } catch (e) {
       if (streamed) opts.stream?.onReset();
       const reason = signal.aborted && !opts.turnSignal.aborted ? `timeout after ${router.callTimeoutMs} ms` : describe(e);
       if (!isFallback) primaryFailed = true;
+      failedModelIds.push(model.id);
       causes.push(`${model.id}: ${reason}`);
       recorder.llmCalls.push({
         ...base,
@@ -248,10 +312,14 @@ export async function invokeWithFallback(
         completionTokens: null,
         costUsd: null,
       });
-      // Bad key / no credits fail identically on the fallback (same key, same account): stop here.
+      // Bad key / no credits fail identically on every model of the same provider: never retry there.
       if (isAccountError(e)) {
-        causes.push("fallback skipped: account-level error (same key/credits)");
-        break;
+        accountFailures.push(model);
+        const rest = attempts.slice(attempts.findIndex((a) => a.model === model) + 1);
+        if (rest.every((a) => !differentAccount(model, a.model))) {
+          causes.push("fallback skipped: account-level error (same key/credits)");
+          break;
+        }
       }
     } finally {
       deadline.clear();

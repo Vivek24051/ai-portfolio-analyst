@@ -2,11 +2,13 @@
 import { describe, expect, it } from "vitest";
 import { checkNumericFaithfulness, extractNumbers } from "@/agent/faithfulness";
 import { createDevStubModel } from "@/agent/devStubModel";
+import { fmtPp } from "@/agent/present";
 import { formatToolResultForStub } from "@/agent/stubFormat";
 import { handleChatTurn } from "@/server/services/chatService";
-import { pct, summarizePortfolio } from "@/domain/analytics";
+import { compareGroups, pct, rankProperties, summarizePortfolio } from "@/domain/analytics";
 import { applyFilter } from "@/domain/filters";
 import { formatInr } from "@/domain/money";
+import { runScenario } from "@/domain/scenario";
 import { freshStores } from "./agentHelpers";
 import { loadSeed, propsOf } from "./helpers";
 
@@ -186,5 +188,208 @@ describe("dev stub regressions (help text, rental-yield routing)", () => {
     // A plain rent question still ranks by rent.
     const rent = await handleChatTurn(deps(), { userId: "U004", message: "Which property earns the most rent?" });
     expect(rent.reply).toContain("Ranked by rent");
+  });
+});
+
+// H1 regression: "value dropped to ₹10 Cr" was run as "Excluded P009" because "drop" was an exclusion
+// verb. It is an absolute hypothetical revaluation; figures must come from the backend scenario.
+describe("dev stub: absolute what-if values (H1)", () => {
+  const H1 = "What if my Sector 29 property's value dropped to ₹10 Cr?";
+
+  it("revalues P009 to ₹10 Cr instead of excluding it; every figure is the backend scenario's", async () => {
+    const d = deps();
+    const r = await handleChatTurn(d, { userId: "U003", message: H1 });
+    // Independent expectation from the domain function the tool uses (no hardcoded totals).
+    const expected = runScenario(propsOf("U003"), { valueOverrides: [{ propertyId: "P009", newValueInr: 100_000_000 }] });
+    const before = propsOf("U003").find((p) => p.id === "P009")!.currentValueInr;
+
+    expect(r.hypothetical).toBe(true);
+    expect(r.reply).not.toContain("Excluded");
+    expect(r.reply).toContain(`- P009 value: ${formatInr(before)} → **${formatInr(100_000_000)}** (-${formatInr(before - 100_000_000)})`);
+    expect(r.reply).toContain(`Total value: ${formatInr(expected.baseline.totalValueInr)} → **${formatInr(expected.scenario.totalValueInr)}**`);
+    expect(formatInr(expected.scenario.totalValueInr)).toBe("₹45.5 Cr"); // the golden set's expected figure
+    expect(r.needsAttention).toBe(false); // production faithfulness check: every figure traces to tool output
+  });
+
+  it("creates no real proposal and writes nothing", async () => {
+    const d = deps();
+    const before = structuredClone(d.stores.state.properties);
+    const r = await handleChatTurn(d, { userId: "U003", message: H1 });
+    expect(r.pendingAction).toBeNull();
+    expect(d.stores.state.pendingActions).toHaveLength(0);
+    expect(d.stores.state.audits).toHaveLength(0);
+    expect(d.stores.state.properties).toEqual(before);
+  });
+
+  it("an absolute rent what-if uses the new figure; another user's id is still not found", async () => {
+    const rent = await handleChatTurn(deps(), { userId: "U001", message: "What if the rent of P001 dropped to ₹60 lakh?" });
+    expect(rent.reply).toContain("- P001 annual rent: ₹72 L → **₹60 L** a year (-₹12 L)");
+    const other = await handleChatTurn(deps(), { userId: "U001", message: "What if P004's value dropped to ₹1 Cr?" });
+    expect(other.reply).toContain("I couldn't run that what-if: Property not found in this portfolio: P004.");
+    expect(other.reply).not.toContain("₹6.4 Cr"); // U002's figure is never shown
+  });
+
+  it("'drop' alone never excludes a property; explicit exclusion still works", async () => {
+    for (const message of ["What if the Sector 29 property drops?", "What if I drop P009?"]) {
+      const d = deps();
+      const r = await handleChatTurn(d, { userId: "U003", message });
+      expect(r.reply).not.toContain("Excluded");
+      expect(r.hypothetical).toBe(false);
+      expect(d.stores.state.pendingActions).toHaveLength(0);
+    }
+    const exclude = await handleChatTurn(deps(), { userId: "U003", message: "What if I exclude the Sector 29 property?" });
+    expect(exclude.reply).toContain("- Excluded P009");
+  });
+});
+
+// Read-only filters / sorting (R002, C4, C5, M3), totals and comparisons (C3, M2, A6, M1 turn 4) and
+// hypothetical purchases / described properties (H2, H3). Expected figures come from the same domain
+// functions the tools use, never from hardcoded answers.
+describe("dev stub: filters, totals, comparisons and more what-ifs", () => {
+  const ids = (ps: { id: string }[]) => ps.map((p) => p.id);
+
+  it("R002: 'above ₹10 crore' filters on current value (strict) and lists only the matches", async () => {
+    const mine = propsOf("U001");
+    const above = applyFilter(mine, { valueAboveInr: 100_000_000 });
+    const r = await handleChatTurn(deps(), { userId: "U001", message: "Which of my properties are above ₹10 crore?" });
+    for (const p of above) expect(r.reply).toContain(`**${p.id}**`);
+    for (const id of ids(mine).filter((id) => !ids(above).includes(id))) expect(r.reply).not.toContain(id);
+    expect(r.reply).toContain(formatInr(above[0]!.currentValueInr));
+    const below = applyFilter(mine, { valueBelowInr: 100_000_000 });
+    const r2 = await handleChatTurn(deps(), { userId: "U001", message: "Which of my properties are under ₹10 crore?" });
+    expect(r2.reply).toContain(`Found **${below.length} properties**`);
+    expect(r.needsAttention || r2.needsAttention).toBe(false);
+  });
+
+  it("C4: 'lowest rent' ranks ascending and leaves zero-rent properties out of the ranking", async () => {
+    const ranking = rankProperties(propsOf("U001"), "rent", "asc", 1);
+    const top = ranking.entries[0]!.property;
+    const r = await handleChatTurn(deps(), { userId: "U001", message: "Which property has the lowest rent?" });
+    expect(r.reply).toContain(`**${top.id}** has the lowest annual rent: **${formatInr(top.annualRentInr)} a year**.`);
+    for (const e of ranking.excluded) expect(r.reply).toContain(`${e.propertyId} — ${e.reason}`);
+    expect(r.needsAttention).toBe(false);
+  });
+
+  it("C5 / M3: occupancy filters, directly and on the previous result set", async () => {
+    const offices = applyFilter(propsOf("U003"), { assetClasses: ["OFFICE"] });
+    const vacant = applyFilter(offices, { occupancy: ["VACANT"] });
+    const others = ids(offices).filter((id) => !ids(vacant).includes(id));
+    expect(vacant.length).toBeGreaterThan(0);
+    expect(others.length).toBeGreaterThan(0);
+
+    const direct = await handleChatTurn(deps(), { userId: "U003", message: "Which of my offices are vacant?" });
+    for (const id of ids(vacant)) expect(direct.reply).toContain(id);
+    for (const id of others) expect(direct.reply).not.toContain(id);
+
+    const d = deps();
+    const first = await handleChatTurn(d, { userId: "U003", message: "Tell me about my offices" });
+    const follow = await handleChatTurn(d, { userId: "U003", conversationId: first.conversationId, message: "Which one is vacant?" });
+    for (const id of ids(vacant)) expect(follow.reply).toContain(id);
+    for (const id of others) expect(follow.reply).not.toContain(id);
+  });
+
+  it("statements such as 'It's vacant' are not turned into occupancy searches", async () => {
+    const statement = await handleChatTurn(deps(), { userId: "U001", message: "It's vacant" });
+    expect(statement.reply).toMatch(/^\[dev stub — no LLM configured\]/); // unrecognised, as before
+    const status = await handleChatTurn(deps(), { userId: "U001", message: "My Andheri office is now tenanted" });
+    expect(status.reply).not.toContain("No properties in your portfolio match that."); // not filtered to tenanted offices
+    expect(status.reply).toContain("What is the annual rent for **P002** now?"); // a status change (W5), not a search
+  });
+
+  it("C3: income and overall yield come from the portfolio totals, not a ranking", async () => {
+    const s = summarizePortfolio(propsOf("U002"));
+    const r = await handleChatTurn(deps(), { userId: "U002", message: "What is my annual rental income and overall yield?" });
+    expect(r.reply).toContain(`earning **${formatInr(s.totalAnnualRentInr)}** a year in rent`);
+    expect(r.reply).toContain(`Gross yield ${s.portfolioGrossYieldPct}%`);
+    expect(r.reply).not.toContain("Ranked by");
+  });
+
+  it("M2: 'their combined value' totals exactly the previous result set", async () => {
+    const mine = propsOf("U002");
+    const mumbai = applyFilter(mine, { city: "Mumbai" });
+    const d = deps();
+    const first = await handleChatTurn(d, { userId: "U002", message: "Show me my properties in Mumbai" });
+    const r = await handleChatTurn(d, { userId: "U002", conversationId: first.conversationId, message: "What's their combined value?" });
+    const names = ids(mumbai).length > 1 ? `${ids(mumbai).slice(0, -1).join(", ")} and ${ids(mumbai).at(-1)}` : ids(mumbai)[0];
+    const part = summarizePortfolio(mumbai).totalValueInr;
+    const whole = summarizePortfolio(mine).totalValueInr;
+    expect(r.reply).toContain(`Combined value of **${names}**: **${formatInr(part)}**, which is ${pct(part, whole)}% of your **${formatInr(whole)}** portfolio.`);
+    expect(r.needsAttention).toBe(false);
+  });
+
+  it("A6: 'compare residential and commercial' uses compare_groups and states both shares", async () => {
+    const mine = propsOf("U004");
+    const c = compareGroups(
+      mine,
+      { label: "Residential", properties: applyFilter(mine, { sector: "RESIDENTIAL" }) },
+      { label: "Commercial", properties: applyFilter(mine, { sector: "COMMERCIAL" }) },
+    );
+    const r = await handleChatTurn(deps(), { userId: "U004", message: "Compare my residential and commercial exposure." });
+    expect(r.reply).toContain("**Residential vs Commercial (retail + office)**");
+    expect(r.reply).toContain(`(${c.a.shareOfPortfolioPct}% of your portfolio)`);
+    expect(r.reply).toContain(`(${c.b.shareOfPortfolioPct}% of your portfolio)`);
+    expect(r.needsAttention).toBe(false);
+    // Only one group named: no comparison is invented.
+    const one = await handleChatTurn(deps(), { userId: "U004", message: "Compare my residential properties." });
+    expect(one.reply).not.toContain(" vs ");
+  });
+
+  it("M1 turn 4: a what-if shows the mix change by type from the backend scenario", async () => {
+    const d = deps();
+    let conversationId: string | undefined;
+    for (const message of ["Tell me about my retail properties.", "Which one is performing better?", "What if I exclude the Bandra property?"]) {
+      conversationId = (await handleChatTurn(d, { userId: "U001", message, ...(conversationId ? { conversationId } : {}) })).conversationId;
+    }
+    const r = await handleChatTurn(d, { userId: "U001", conversationId, message: "How would that change my portfolio?" });
+    const s = runScenario(propsOf("U001"), { excludePropertyIds: ["P001"] });
+    const share = (sum: typeof s.baseline) => sum.byAssetClass.find((b) => b.key === "RETAIL")!.valueSharePct;
+    expect(r.reply).toContain(`- Retail: ${share(s.baseline)}% → **${share(s.scenario)}%** (${fmtPp(s.deltas.assetClassSharePctPoints.RETAIL!)})`);
+    expect(r.hypothetical).toBe(true);
+  });
+
+  it("H2: a hypothetical purchase is added to a scenario only; the city comes from the user's own index", async () => {
+    const d = deps();
+    const before = structuredClone(d.stores.state.properties);
+    const r = await handleChatTurn(d, { userId: "U004", message: "What if I bought a ₹5 Cr office in Whitefield?" });
+    const s = runScenario(propsOf("U004"), {
+      additions: [{ assetClass: "OFFICE", city: "Bengaluru", locality: "Whitefield", currentValueInr: 50_000_000 }],
+    });
+    expect(r.hypothetical).toBe(true);
+    expect(r.reply).toContain("- Added HYPOTHETICAL-1 (OFFICE, Bengaluru, value ₹5 Cr)");
+    expect(r.reply).toContain(`Total value: ${formatInr(s.baseline.totalValueInr)} → **${formatInr(s.scenario.totalValueInr)}**`);
+    expect(r.pendingAction).toBeNull();
+    expect(d.stores.state.pendingActions).toHaveLength(0);
+    expect(d.stores.state.properties).toEqual(before);
+    expect(r.needsAttention).toBe(false);
+  });
+
+  it("H2: an unknown place or missing price gets a question with no figures, and nothing runs", async () => {
+    for (const message of ["What if I bought a ₹5 Cr office in Atlantis?", "What if I bought an office in Whitefield?"]) {
+      const r = await handleChatTurn(deps(), { userId: "U004", message });
+      expect(r.hypothetical).toBe(false);
+      expect(extractNumbers(r.reply)).toEqual([]);
+    }
+  });
+
+  it("H3: 'my vacant office' resolves to the single matching property; ambiguity is never guessed", async () => {
+    const d = deps();
+    const r = await handleChatTurn(d, { userId: "U001", message: "What if I sold my vacant office?" });
+    const target = applyFilter(propsOf("U001"), { assetClasses: ["OFFICE"], occupancy: ["VACANT"] });
+    expect(target).toHaveLength(1);
+    const s = runScenario(propsOf("U001"), { excludePropertyIds: [target[0]!.id] });
+    expect(r.reply).toContain(`- Excluded ${target[0]!.id}`);
+    expect(r.reply).toContain(`Total value: ${formatInr(s.baseline.totalValueInr)} → **${formatInr(s.scenario.totalValueInr)}**`);
+    expect(d.stores.state.pendingActions).toHaveLength(0);
+
+    // U003 has two offices: "my office" is ambiguous → no scenario, no guess.
+    expect(applyFilter(propsOf("U003"), { assetClasses: ["OFFICE"] }).length).toBeGreaterThan(1);
+    const ambiguous = await handleChatTurn(deps(), { userId: "U003", message: "What if I sold my office?" });
+    expect(ambiguous.hypothetical).toBe(false);
+    expect(ambiguous.reply).not.toContain("Excluded");
+
+    // U002 has no office: nothing from another user's portfolio is used.
+    const none = await handleChatTurn(deps(), { userId: "U002", message: "What if I sold my vacant office?" });
+    expect(none.hypothetical).toBe(false);
+    expect(none.reply).not.toMatch(/\bP\d{3,}\b/);
   });
 });

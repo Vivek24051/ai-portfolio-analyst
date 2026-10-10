@@ -9,12 +9,17 @@ import "server-only";
 //   LLM_PROVIDER=openrouter or omitted + OPENROUTER_API_KEY + LLM_PRIMARY_MODEL
 //                                                                → OpenRouter (paid; optional LLM_FALLBACK_MODEL)
 //   unrecognised LLM_PROVIDER, missing key/model, or nothing set → dev stub model (no LLM, no cost)
+//
+//   With a real primary: fallback = LLM_FALLBACK_PROVIDER (default: same provider) + LLM_FALLBACK_MODEL,
+//   then the labelled dev stub as last resort (LLM_STUB_LAST_RESORT, default on). OpenRouter ids must end
+//   in ":free" unless OPENROUTER_ALLOW_PAID=true (default off): a refused id is never used.
 
 import { readFileSync } from "node:fs";
 import { seedFile } from "@/data/paths";
-import { loadAgentConfig, type AgentConfig } from "@/agent/config";
+import { isAllowedOpenRouterModel, loadAgentConfig, type AgentConfig } from "@/agent/config";
 import { createDevStubModel } from "@/agent/devStubModel";
-import { createGeminiModel, createOpenRouterModel, type ModelRouter } from "@/agent/model";
+import { createGeminiModel, createOpenRouterModel, type ChatModel, type ModelRouter } from "@/agent/model";
+import { redactSecrets } from "./redact";
 import { buildSeed } from "@/data/seedData";
 import { RateLimiter } from "./rateLimit";
 import { createMemoryStores } from "./stores/memory";
@@ -40,7 +45,32 @@ async function createStores(backend: "memory" | "prisma"): Promise<Stores> {
   return createMemoryStores(seed);
 }
 
-export function createRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"] } {
+// The free-only rule lives in @/agent/config (no server-only import) so the evaluation runner shares it.
+export { isAllowedOpenRouterModel };
+
+/**
+ * Builds one real model, or null when it cannot be used (missing key, or a non-free OpenRouter id
+ * without the paid opt-in). Warnings never echo values: a mis-pasted key would land in the logs.
+ */
+function buildModel(provider: "gemini" | "openrouter", modelId: string | null, config: AgentConfig, role: "primary" | "fallback"): ChatModel | null {
+  if (!modelId) return null;
+  if (provider === "gemini") {
+    if (config.geminiApiKey) return createGeminiModel(modelId, config.geminiApiKey);
+    if (role === "fallback") console.warn("[container] fallback provider gemini needs GEMINI_API_KEY; no fallback model is used");
+    return null;
+  }
+  if (!config.openRouterApiKey) {
+    if (role === "fallback") console.warn("[container] fallback provider openrouter needs OPENROUTER_API_KEY; no fallback model is used");
+    return null;
+  }
+  if (!isAllowedOpenRouterModel(modelId, config.openRouterAllowPaid)) {
+    console.warn(`[container] refused the ${role} OpenRouter model: only ":free" model ids are allowed (OPENROUTER_ALLOW_PAID is not enabled)`);
+    return null;
+  }
+  return createOpenRouterModel(modelId, config.openRouterApiKey);
+}
+
+export function createRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"]; modelChain: string[] } {
   if (config.unrecognizedProvider) {
     // Never echo the value: a mis-pasted secret would otherwise land in server logs.
     console.warn("[container] unrecognised LLM_PROVIDER value; using the dev stub (expected: stub, gemini, openrouter)");
@@ -49,37 +79,41 @@ export function createRouter(config: AgentConfig): { router: ModelRouter; modelM
     // Forced stub: no model client is constructed at all, whatever keys are present.
     return devStubRouter(config);
   }
-  if (config.provider === "gemini") {
-    if (config.geminiApiKey && config.primaryModel) {
-      const key = config.geminiApiKey;
-      return {
-        modelMode: "gemini",
-        router: {
-          primary: createGeminiModel(config.primaryModel, key),
-          fallback: config.fallbackModel ? createGeminiModel(config.fallbackModel, key) : null,
-          callTimeoutMs: config.llmCallTimeoutMs,
-        },
-      };
+  const primaryProvider = config.provider === "gemini" ? "gemini" : "openrouter"; // null keeps the legacy OpenRouter rule
+  if (primaryProvider === "openrouter" && !config.openRouterApiKey) return devStubRouter(config);
+  const primary = buildModel(primaryProvider, config.primaryModel, config, "primary");
+  if (!primary) {
+    if (primaryProvider === "gemini") {
+      console.warn("[container] LLM_PROVIDER=gemini but GEMINI_API_KEY or LLM_PRIMARY_MODEL is missing; using the dev stub");
     }
-    console.warn("[container] LLM_PROVIDER=gemini but GEMINI_API_KEY or LLM_PRIMARY_MODEL is missing; using the dev stub");
-  } else if ((config.provider === null || config.provider === "openrouter") && config.openRouterApiKey && config.primaryModel) {
-    return {
-      modelMode: "openrouter",
-      router: {
-        primary: createOpenRouterModel(config.primaryModel, config.openRouterApiKey),
-        fallback: config.fallbackModel ? createOpenRouterModel(config.fallbackModel, config.openRouterApiKey) : null,
-        callTimeoutMs: config.llmCallTimeoutMs,
-      },
-    };
+    return devStubRouter(config);
   }
-  return devStubRouter(config);
+
+  if (config.unrecognizedFallbackProvider) {
+    console.warn("[container] unrecognised LLM_FALLBACK_PROVIDER value; no cross-provider fallback (expected: gemini, openrouter, stub)");
+  }
+  const fallbackProvider = config.unrecognizedFallbackProvider ? null : (config.fallbackProvider ?? primaryProvider);
+  const stub = devStubModel();
+  const fallback =
+    fallbackProvider === "stub" ? stub : fallbackProvider ? buildModel(fallbackProvider, config.fallbackModel, config, "fallback") : null;
+  const lastResort = config.stubLastResort && fallback !== stub ? stub : null;
+
+  const label = (m: ChatModel) => (m.provider === "stub" ? "stub" : `${m.provider}:${m.id}`);
+  return {
+    modelMode: primaryProvider,
+    modelChain: [primary, fallback, lastResort].filter((m): m is ChatModel => m !== null).map(label),
+    router: { primary, fallback, lastResort, callTimeoutMs: config.llmCallTimeoutMs },
+  };
 }
 
-function devStubRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"] } {
+function devStubModel(): ChatModel {
   // DEV_STUB_STREAM_DELAY_MS: artificial per-word delay for demos (default 12); 0 for benchmarks.
   const delay = Number(process.env.DEV_STUB_STREAM_DELAY_MS);
-  const stub = createDevStubModel(Number.isFinite(delay) && delay >= 0 ? { streamDelayMs: delay } : {});
-  return { modelMode: "dev-stub", router: { primary: stub, fallback: null, callTimeoutMs: config.llmCallTimeoutMs } };
+  return createDevStubModel(Number.isFinite(delay) && delay >= 0 ? { streamDelayMs: delay } : {});
+}
+
+function devStubRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"]; modelChain: string[] } {
+  return { modelMode: "dev-stub", modelChain: ["stub"], router: { primary: devStubModel(), fallback: null, callTimeoutMs: config.llmCallTimeoutMs } };
 }
 
 /** Messages per user per minute (CHAT_RATE_LIMIT_PER_MIN, default 20). */
@@ -93,9 +127,10 @@ export function getContainer(): Promise<Container> {
   const created = (async (): Promise<Container> => {
     const config = loadAgentConfig();
     const dataBackend: Container["dataBackend"] = process.env.DATA_BACKEND === "prisma" ? "prisma" : "memory";
-    const { router, modelMode } = createRouter(config);
+    const { router, modelMode, modelChain } = createRouter(config);
     const stores = await createStores(dataBackend);
-    console.info(`[container] data=${dataBackend} model=${modelMode}${modelMode !== "dev-stub" ? ` (${config.primaryModel})` : ""}`);
+    // Model ids only (never keys), redacted in case a key was pasted into a model variable.
+    console.info(redactSecrets(`[container] data=${dataBackend} model=${modelMode} chain=${modelChain.join(" → ")}`));
     return { stores, router, config, modelMode, dataBackend, chatLimiter: new RateLimiter(chatRateLimit(), 60_000) };
   })().catch((e) => {
     g.__container = undefined; // allow a retry instead of caching the failure

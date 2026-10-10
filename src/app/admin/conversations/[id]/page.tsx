@@ -81,7 +81,8 @@ function RunDetails({ run, index }: { run: TraceRun; index: number }) {
               <tr key={i}>
                 <td>{i + 1}</td>
                 <td>
-                  {c.model} {c.isFallback && <span className="badge warn">fallback</span>}
+                  {c.model} {c.isFallback && <span className="badge warn">fallback</span>}{" "}
+                  {c.lastResort && <span className="badge warn">stub last resort</span>}
                 </td>
                 <td>{c.ok ? <span className="badge ok">ok</span> : <span className="badge err" title={c.error ?? ""}>{c.error ?? "error"}</span>}</td>
                 <td>{ms(c.ms)}</td>
