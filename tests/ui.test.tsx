@@ -84,6 +84,28 @@ describe("MessageBubble", () => {
   });
 });
 
+describe("RichText: lists that follow a heading line (Gemini style)", () => {
+  it("renders '* ' lines under 'Key highlights:' as a bullet list, not literal asterisks", () => {
+    const { container } = render(
+      <MessageBubble
+        message={{
+          id: "1",
+          role: "assistant",
+          text: "Your portfolio has 3 properties.\n\nKey highlights:\n* **Asset Class:** 71.38% Retail\n* **Occupancy:** 28.62% Vacant\n\nPlease note purchase prices are missing.",
+          createdAt: at,
+          hypothetical: false,
+          toolActivity: [],
+        }}
+      />,
+    );
+    const items = [...container.querySelectorAll("li")].map((li) => li.textContent);
+    expect(items).toEqual(["Asset Class: 71.38% Retail", "Occupancy: 28.62% Vacant"]);
+    expect(container.textContent).not.toContain("* ");
+    expect(container.textContent).toContain("Key highlights:");
+    expect(container.querySelector("li strong")?.textContent).toBe("Asset Class:");
+  });
+});
+
 describe("PendingActionCard", () => {
   it("shows the before/after diff and wires Confirm / Edit / Cancel", () => {
     const onConfirm = vi.fn();

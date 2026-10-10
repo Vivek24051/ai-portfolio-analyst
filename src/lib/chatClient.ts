@@ -15,7 +15,7 @@ export interface DemoUser {
 export interface SessionInfo {
   currentUserId: string | null;
   users: DemoUser[];
-  modelMode: "openrouter" | "dev-stub";
+  modelMode: "openrouter" | "gemini" | "dev-stub";
   dataBackend: "memory" | "prisma";
 }
 

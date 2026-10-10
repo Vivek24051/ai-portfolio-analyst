@@ -1,9 +1,11 @@
 // DEV STUB — not an LLM. A keyword router that lets the chat UI and API run locally without an
 // OpenRouter key or any paid call. It exercises the real graph, tools and persistence, but its
-// "understanding" is a handful of regexes. Replies are prefixed so nobody mistakes it for the agent.
+// "understanding" is a handful of regexes, and its answers are fixed templates over the tool output.
+// Replies are prefixed so nobody mistakes it for the agent.
 
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatModel } from "./model";
+import { formatToolResultForStub } from "./stubFormat";
 
 export const DEV_STUB_ID = "dev-stub (no LLM configured)";
 const PREFIX = "[dev stub — no LLM configured]";
@@ -32,7 +34,8 @@ function route(text: string): AIMessage {
 function respond(messages: BaseMessage[]): AIMessage {
   const last = messages.at(-1);
   if (last && ToolMessage.isInstance(last)) {
-    return new AIMessage(`${PREFIX} Raw tool result:\n${String(last.content).slice(0, 1500)}`);
+    // Template reply built only from the tool's own output (see stubFormat.ts).
+    return new AIMessage(formatToolResultForStub(last.name, String(last.content)));
   }
   const human = [...messages].reverse().find((m) => HumanMessage.isInstance(m));
   return route(human ? String(human.content) : "");

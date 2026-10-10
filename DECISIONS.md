@@ -271,3 +271,22 @@ An invalid key or exhausted credits fail identically on the fallback model, beca
 In-process (mock model), HTTP (local `next start`, dev stub), and eval-runner timings are reported separately, each with machine, workload, and conditions. Eval-runner "model" time includes the token-estimation wrapper and is not used as a latency figure.
 
 Token counts for planning use cl100k and are labelled as estimates; they are never stored as usage. Two operational knobs were added for benchmarking: `CHAT_RATE_LIMIT_PER_MIN` and `DEV_STUB_STREAM_DELAY_MS`.
+
+---
+## Free-only follow-ups
+
+## D48. Readable dev-stub replies from fixed templates
+The stub used to print raw tool JSON, which was unreadable in a demo. It now fills fixed templates (`src/agent/stubFormat.ts`) with strings copied verbatim from the tool result, so the numeric-faithfulness check still passes. Replies stay labelled `[dev stub — template reply, no LLM]`. The dev-stub evaluation scores were identical before and after the change.
+
+## D49. Google Gemini as the free real-model option
+OpenAI and Anthropic APIs have no free tier; Gemini does. It is reached through Gemini's OpenAI-compatible endpoint by the same `ChatOpenAI` client, configured with a provider profile:
+- **Standard fields only.** No OpenRouter-only fields (`usage.include`, `parallel_tool_calls`, the `X-Title` header).
+- **Stream usage not requested,** to avoid a rejected request. Tokens may therefore be reported as unknown (null), never as zero.
+- **Fallback is a second Gemini model,** because free-tier rate limits are per model.
+- **Incomplete Gemini settings fall back to the free dev stub,** never to a paid provider.
+- **Key safety.** The key is git-ignored in `.env.local` and redacted from logs and traces.
+
+Verified offline against synthetic payloads (`tests/gemini.test.ts`) and checked manually in the chat. **Not** systematically evaluated or benchmarked.
+
+## D50. Markdown lists after a heading line
+Gemini writes "Key highlights:" followed directly by `* item` lines in the same block. The safe renderer now splits each block into runs of list and non-list lines, so these render as bullets instead of literal asterisks. It still never injects HTML.

@@ -47,33 +47,42 @@ function chunkText(chunk: AIMessageChunk): string {
   return chunk.content.map((b) => (typeof b === "object" && "text" in b && typeof b.text === "string" ? b.text : "")).join("");
 }
 
-/**
- * OpenRouter via the OpenAI-compatible API.
- * NOT exercised by any test (no paid calls yet) — verified only by type-checking.
- */
+/** Options shared by all OpenAI-compatible providers. */
 export interface OpenRouterOptions {
-  /** Injected fetch — used by tests to replay synthetic OpenRouter responses without network access. */
+  /** Injected fetch — used by tests to replay synthetic provider responses without network access. */
   fetch?: typeof fetch;
   baseURL?: string;
 }
 
-export function createOpenRouterModel(modelId: string, apiKey: string, options: OpenRouterOptions = {}): ChatModel {
+/** What differs between OpenAI-compatible providers. */
+interface ProviderProfile {
+  baseURL: string;
+  /** Provider-specific request fields (e.g. OpenRouter usage accounting). */
+  modelKwargs?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  /** Send `parallel_tool_calls` when binding tools. */
+  parallelToolCalls: boolean;
+  /** Send `stream_options.include_usage` on streamed calls. */
+  streamUsage: boolean;
+}
+
+function createOpenAICompatibleModel(modelId: string, apiKey: string, profile: ProviderProfile, options: OpenRouterOptions): ChatModel {
   const client = new ChatOpenAI({
     model: modelId,
     apiKey,
     temperature: 0,
     // Retries/fallback are handled by invokeWithFallback, so failures surface fast.
     maxRetries: 0,
-    streamUsage: true,
-    // Ask OpenRouter to include usage accounting (tokens + cost) in responses.
-    modelKwargs: { usage: { include: true } },
+    streamUsage: profile.streamUsage,
+    ...(profile.modelKwargs ? { modelKwargs: profile.modelKwargs } : {}),
     configuration: {
-      baseURL: options.baseURL ?? OPENROUTER_BASE_URL,
+      baseURL: options.baseURL ?? profile.baseURL,
       ...(options.fetch ? { fetch: options.fetch } : {}),
-      defaultHeaders: { "X-Title": "AI Real Estate Portfolio Analyst" },
+      ...(profile.headers ? { defaultHeaders: profile.headers } : {}),
     },
   });
-  const runnableFor = (tools: ToolSpec[] | null) => (tools ? client.bindTools(tools, { parallel_tool_calls: true }) : client);
+  const runnableFor = (tools: ToolSpec[] | null) =>
+    tools ? client.bindTools(tools, profile.parallelToolCalls ? { parallel_tool_calls: true } : {}) : client;
   return {
     id: modelId,
     async invoke(messages, opts) {
@@ -96,6 +105,38 @@ export function createOpenRouterModel(modelId: string, apiKey: string, options: 
       });
     },
   };
+}
+
+/**
+ * OpenRouter via the OpenAI-compatible API (paid; not used in this submission).
+ * Verified offline against synthetic payloads (tests/openrouter.test.ts).
+ */
+export function createOpenRouterModel(modelId: string, apiKey: string, options: OpenRouterOptions = {}): ChatModel {
+  return createOpenAICompatibleModel(
+    modelId,
+    apiKey,
+    {
+      baseURL: OPENROUTER_BASE_URL,
+      // Ask OpenRouter to include usage accounting (tokens + cost) in responses.
+      modelKwargs: { usage: { include: true } },
+      headers: { "X-Title": "AI Real Estate Portfolio Analyst" },
+      parallelToolCalls: true,
+      streamUsage: true,
+    },
+    options,
+  );
+}
+
+export const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
+
+/**
+ * Google Gemini through its OpenAI-compatible endpoint (free tier via a Google AI Studio key).
+ * Only standard OpenAI request fields are sent — no OpenRouter extras — and stream usage is not
+ * requested, so token counts may be "not reported" (null) rather than risk a rejected request.
+ * Verified offline against synthetic payloads (tests/gemini.test.ts); live behaviour untested here.
+ */
+export function createGeminiModel(modelId: string, apiKey: string, options: OpenRouterOptions = {}): ChatModel {
+  return createOpenAICompatibleModel(modelId, apiKey, { baseURL: GEMINI_OPENAI_BASE_URL, parallelToolCalls: false, streamUsage: false }, options);
 }
 
 /**

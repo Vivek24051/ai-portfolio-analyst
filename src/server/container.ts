@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { seedFile } from "@/data/paths";
 import { loadAgentConfig, type AgentConfig } from "@/agent/config";
 import { createDevStubModel } from "@/agent/devStubModel";
-import { createOpenRouterModel, type ModelRouter } from "@/agent/model";
+import { createGeminiModel, createOpenRouterModel, type ModelRouter } from "@/agent/model";
 import { buildSeed } from "@/data/seedData";
 import { RateLimiter } from "./rateLimit";
 import { createMemoryStores } from "./stores/memory";
@@ -21,7 +21,7 @@ interface Container {
   stores: Stores;
   router: ModelRouter;
   config: AgentConfig;
-  modelMode: "openrouter" | "dev-stub";
+  modelMode: "openrouter" | "gemini" | "dev-stub";
   dataBackend: "memory" | "prisma";
   chatLimiter: RateLimiter;
 }
@@ -37,8 +37,21 @@ async function createStores(backend: "memory" | "prisma"): Promise<Stores> {
   return createMemoryStores(seed);
 }
 
-function createRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"] } {
-  if (config.openRouterApiKey && config.primaryModel) {
+export function createRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"] } {
+  if (config.provider === "gemini") {
+    if (config.geminiApiKey && config.primaryModel) {
+      const key = config.geminiApiKey;
+      return {
+        modelMode: "gemini",
+        router: {
+          primary: createGeminiModel(config.primaryModel, key),
+          fallback: config.fallbackModel ? createGeminiModel(config.fallbackModel, key) : null,
+          callTimeoutMs: config.llmCallTimeoutMs,
+        },
+      };
+    }
+    console.warn("[container] LLM_PROVIDER=gemini but GEMINI_API_KEY or LLM_PRIMARY_MODEL is missing; using the dev stub");
+  } else if (config.openRouterApiKey && config.primaryModel) {
     return {
       modelMode: "openrouter",
       router: {
@@ -67,7 +80,7 @@ export function getContainer(): Promise<Container> {
     const dataBackend: Container["dataBackend"] = process.env.DATA_BACKEND === "prisma" ? "prisma" : "memory";
     const { router, modelMode } = createRouter(config);
     const stores = await createStores(dataBackend);
-    console.info(`[container] data=${dataBackend} model=${modelMode}${modelMode === "openrouter" ? ` (${config.primaryModel})` : ""}`);
+    console.info(`[container] data=${dataBackend} model=${modelMode}${modelMode !== "dev-stub" ? ` (${config.primaryModel})` : ""}`);
     return { stores, router, config, modelMode, dataBackend, chatLimiter: new RateLimiter(chatRateLimit(), 60_000) };
   })().catch((e) => {
     g.__container = undefined; // allow a retry instead of caching the failure

@@ -23,7 +23,7 @@ flowchart LR
     Stores["User-scoped stores<br/>Prisma | in-memory"]
   end
 
-  LLM[("OpenRouter<br/>or dev stub (no key)")]
+  LLM[("Gemini (free tier) · OpenRouter (paid, unused)<br/>or dev stub (no key)")]
   DB[("PostgreSQL / Neon<br/>or in-memory")]
 
   Chat --> Session

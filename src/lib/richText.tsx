@@ -16,28 +16,42 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
 
 const BULLET = /^\s*(?:[-•*]|\d+[.)])\s+/;
 
+/** Splits a block into runs of list lines and plain lines, so "Heading:\n* a\n* b" renders a list. */
+function runs(lines: string[]): Array<{ list: boolean; lines: string[] }> {
+  const out: Array<{ list: boolean; lines: string[] }> = [];
+  for (const line of lines) {
+    const list = BULLET.test(line);
+    const last = out[out.length - 1];
+    if (last && last.list === list) last.lines.push(line);
+    else out.push({ list, lines: [line] });
+  }
+  return out;
+}
+
 export function RichText({ text }: { text: string }) {
   const blocks = text.replace(/\r\n/g, "\n").trim().split(/\n{2,}/);
   return (
     <>
-      {blocks.map((block, b) => {
-        const lines = block.split("\n");
-        if (lines.length > 0 && lines.every((l) => BULLET.test(l))) {
-          const ordered = /^\s*\d/.test(lines[0]!);
-          const items = lines.map((l, i) => <li key={i}>{inline(l.replace(BULLET, ""), `${b}-${i}`)}</li>);
-          return ordered ? <ol key={b}>{items}</ol> : <ul key={b}>{items}</ul>;
-        }
-        return (
-          <p key={b}>
-            {lines.map((l, i) => (
-              <Fragment key={i}>
-                {i > 0 && <br />}
-                {inline(l, `${b}-${i}`)}
-              </Fragment>
-            ))}
-          </p>
-        );
-      })}
+      {blocks.flatMap((block, b) =>
+        runs(block.split("\n")).map((run, r) => {
+          const key = `${b}-${r}`;
+          if (run.list) {
+            const ordered = /^\s*\d/.test(run.lines[0]!);
+            const items = run.lines.map((l, i) => <li key={i}>{inline(l.replace(BULLET, ""), `${key}-${i}`)}</li>);
+            return ordered ? <ol key={key}>{items}</ol> : <ul key={key}>{items}</ul>;
+          }
+          return (
+            <p key={key}>
+              {run.lines.map((l, i) => (
+                <Fragment key={i}>
+                  {i > 0 && <br />}
+                  {inline(l, `${key}-${i}`)}
+                </Fragment>
+              ))}
+            </p>
+          );
+        }),
+      )}
     </>
   );
 }

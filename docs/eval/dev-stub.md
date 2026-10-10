@@ -5,10 +5,10 @@
 | | |
 |---|---|
 | Model | dev-stub (keyword router, mock) |
-| Started | 2026-10-10T09:10:49.598Z |
+| Started | 2026-10-10T15:45:28.446Z |
 | Repeats | 1 |
 | Machine | AMD Ryzen 7 4800HS with Radeon Graphics ×16 · win32 10.0.26200 · Node 20.20.2 |
-| Commit | 90d38a4 |
+| Commit | 76a9571 |
 
 ## Scores
 
@@ -47,19 +47,19 @@
 
 | Span | n | p50 | p95 | max |
 |---|---|---|---|---|
-| totalMs | 49 | 31 | 43 | 81 |
-| llmMs | 49 | 25 | 34 | 37 |
+| totalMs | 49 | 32 | 41 | 82 |
+| llmMs | 49 | 25 | 30 | 35 |
 | toolMs | 49 | 0 | 1 | 21 |
 | request_validation | 50 | 0 | 0 | 0 |
 | context_load | 50 | 0 | 0 | 1 |
-| agent | 50 | 31 | 43 | 75 |
+| agent | 50 | 31 | 40 | 76 |
 | persist | 50 | 0 | 0 | 0 |
 
 Model calls per turn: p50 2, max 3. Tool calls per turn: p50 1, max 1.
 
 ## Token estimates (cl100k approximation, for cost planning only)
 
-80 model calls · input tokens/call p50 4658, p95 5463, max 6521 · output tokens/call p50 52, max 548 · totals: 388689 in / 10298 out.
+80 model calls · input tokens/call p50 4658, p95 5463, max 6163 · output tokens/call p50 52, max 279 · totals: 387018 in / 6455 out.
 
 ## Safety violations
 

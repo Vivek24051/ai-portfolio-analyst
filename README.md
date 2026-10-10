@@ -13,7 +13,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 > | 4 | Admin dashboard + observability | ✅ (in-memory store, dev stub and scripted models) |
 > | 5 | Evaluation and performance | ✅ free-only: grader/control tests and local benchmarks ([FREE_ONLY_EVALUATION.md](FREE_ONLY_EVALUATION.md)) |
 >
-> **No real LLM has been called, and no database or deployment has been used.** The agent is exercised with scripted test models, an oracle reference policy, and the keyword dev stub. Real-model quality, PostgreSQL, and deployment remain untested (see "Not tested").
+> **Real model: Google Gemini (free tier) can be connected optionally.** It has been checked **manually** in the chat (correct figures, tool use, honest data gaps), but **not systematically evaluated or benchmarked**. All automated tests and evaluations run offline with scripted models, an oracle reference policy, and the keyword dev stub. No database or deployment has been used (see "Not tested").
 
 ## Documents
 
@@ -30,7 +30,10 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 
 - **Next.js 16** (App Router) and **TypeScript**. One deployable unit contains the chat UI, the admin UI, and the API routes.
 - **LangGraph.js**: a single tool-calling agent loop as an explicit state graph, capped at 5 tool rounds.
-- **OpenRouter** (through LangChain's OpenAI-compatible client) as the model gateway. Primary and fallback models are configurable, with per-call and per-turn timeouts.
+- **Model access** through LangChain's OpenAI-compatible client, with configurable primary and fallback models and per-call and per-turn timeouts:
+  - **Google Gemini** (free tier, optional, used for manual testing)
+  - **OpenRouter** (paid, not used)
+  - with neither configured, the free **dev stub**
 - **PostgreSQL** with **Prisma 6** in production (Neon). An **in-memory store** implements the same interface for local development and tests.
 - **Vitest** for tests.
 
@@ -120,7 +123,7 @@ Without `OPENROUTER_API_KEY` (the default, and how this project was built and ev
 
 **What the dev stub does:**
 - Recognises a few phrasings (portfolio overview or total, "show my retail/office/residential properties", "properties in Mumbai/Bengaluru/Delhi NCR…", highest rent, yield) and calls the **real** tools, which run the real calculations on the real data.
-- Replies with the raw tool output, prefixed `[dev stub — no LLM configured]`.
+- Turns the tool result into a short readable answer using fixed templates (`src/agent/stubFormat.ts`), prefixed `[dev stub — template reply, no LLM]`. Every figure is copied verbatim from the tool output; nothing is computed or invented.
 - Can stream word by word (`DEV_STUB_STREAM_DELAY_MS`, default 12 ms) so the streaming UI can be demonstrated.
 
 **What it does not do:**
@@ -133,9 +136,27 @@ Without `OPENROUTER_API_KEY` (the default, and how this project was built and ev
 
 The chat UI and admin pages show a banner whenever the stub is active.
 
-**What a real model would do:** pick tools, interpret follow-ups, ask for missing details, propose changes, and phrase answers from tool output. Those agent behaviours are implemented, and are exercised offline by scripted test models and by the oracle reference policy. They have **not** been run with a real LLM in this submission.
+**What a real model does instead:** pick tools, interpret follow-ups, ask for missing details, propose changes, and phrase answers from tool output. These behaviours are covered offline by scripted test models and the oracle reference policy. With Gemini they have been checked **manually** only.
 
-(Optional, not used here: setting `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL` switches to OpenRouter, which is a paid service.)
+### Optional: connect Google Gemini (free tier)
+
+1. Create an API key in Google AI Studio. Use a Google Cloud project **without billing enabled**, so exceeding the free quota returns HTTP 429 instead of charging.
+2. Add the following to `.env.local` (git-ignored; never commit the key):
+   ```
+   LLM_PROVIDER=gemini
+   GEMINI_API_KEY=<your key>
+   LLM_PRIMARY_MODEL=gemini-2.5-flash
+   LLM_FALLBACK_MODEL=gemini-2.5-flash-lite
+   ```
+3. Restart `npm run dev`. The "Demo mode" banner disappears, and the admin traces show the Gemini model name.
+
+How this connection works:
+- **Endpoint.** Gemini is reached through its OpenAI-compatible endpoint, with only standard request fields.
+- **Rate limits.** Free-tier limits are per model, so the fallback model can absorb a 429 on the primary.
+- **Tokens and cost.** Token counts may show as "—" (not reported), because streamed usage isn't requested. Cost is always "—".
+- **Incomplete settings** fall back to the dev stub. They never fall back to a paid provider.
+
+(OpenRouter is also supported, through `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL`, but it is a paid service and is not used here.)
 
 ### Database (optional)
 
@@ -249,7 +270,7 @@ The oracle and perturbed controls also run inside `npm test` (`tests/eval.test.t
 |---|---|---|---|---|
 | Oracle (must pass) | 40/40 | 34/34 | 7/7 | 0 |
 | Perturbed oracle (falsified figures; must be caught) | 12/40 | 1/34 | 7/7 | 0 |
-| Dev stub (keyword router; must be caught) | 17/40 | 31/31 (echoes tool JSON) | 0/7 | 0 |
+| Dev stub (keyword router; must be caught) | 17/40 | 31/31 (copies tool figures verbatim) | 0/7 | 0 |
 
 The runner also has an `--mode openrouter` for a real model. It is **not used** in this free-only submission and refuses to start without explicit opt-in flags and spend caps ([PERFORMANCE.md §5](PERFORMANCE.md)).
 
@@ -313,12 +334,14 @@ All of these are recorded in [DECISIONS.md](DECISIONS.md).
 | `faithfulness` | Number extraction (₹ Cr/L/crore/lakh, %, pp, plain) and support matching | Nothing |
 | `eval` | Golden set as a regression gate: oracle passes 40/40, perturbed control is caught; grader and spend-guard unit tests | Oracle / perturbed mock models |
 | `openrouter` | **Real** LangChain/OpenAI client with an injected fetch replaying synthetic OpenRouter payloads: request shape, tool-call parsing (incl. streamed fragments), usage and cost, 401/402/429/5xx, hung connections, garbage bodies, an end-to-end turn | Network (synthetic payloads) |
+| `gemini` | Gemini provider over its OpenAI-compatible endpoint: request shape (no OpenRouter-only fields), parsing, streaming, provider selection (never a silent paid fallback), key redaction, an end-to-end turn | Network (synthetic payloads) |
+| `stubFormat` | Dev-stub template replies: readable, no raw JSON, every figure traceable to tool output | In-memory store |
 | `observability` | Token/cost aggregation (missing ≠ zero), cost extraction, redaction, per-turn fallback circuit breaker | Scripted models; cost metadata shapes are assumed |
 
 Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38% retail, and excluding Bandra gives ₹17.7 Cr.
 
 **Not tested yet:**
-- Real model behaviour: tool-choice quality, answer faithfulness, latency, tokens, and cost. This is intentionally not performed in this free-only submission (PERFORMANCE.md §5).
+- **Systematic real-model evaluation.** Gemini (free tier) has been used manually in the chat, but the 40-case evaluation has **not** been run against it. Its latency, tokens, and accuracy are not measured or reported (PERFORMANCE.md §5).
 - Live OpenRouter responses. The integration is verified only against synthetic payloads in OpenRouter's documented format.
 - Deployment. The app has not been deployed, so there is no live URL, and no internet latency or concurrent-load measurement.
 - The Prisma store, the migration and the seed against a live Postgres. This includes the admin queries (`AdminStore` over Prisma): the admin tests run on the in-memory store, which does **not** demonstrate PostgreSQL persistence.
@@ -326,7 +349,7 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 
 ## Known limitations
 
-- **No real model has been used.** The live app runs on the dev stub, so the chat demo shows real tools and calculations but not real-LLM conversation quality (see "Dev stub vs. a real model").
+- **Real model only manually checked.** Without Gemini configured, the app runs on the dev stub, which shows real tools and calculations but not conversation quality. With Gemini's free tier, answers depend on that model and its rate limits, and have only been checked by hand.
 - **No real authentication.** The demo user picker with a signed cookie is the agreed scope.
 - **In-memory data** resets when the server restarts, and each serverless instance has its own copy. Use `DATA_BACKEND=prisma` for persistence.
 - **Per-instance limits.** The chat rate limit (`CHAT_RATE_LIMIT_PER_MIN`, default 20 messages per minute per user) is per server instance.
@@ -346,10 +369,10 @@ Setup before presenting:
 | Time | Show | Say |
 |---|---|---|
 | 0:00–1:00 | `docs/architecture.md` diagram | The problem; why a single tool-calling agent (LangGraph); numbers come from deterministic domain code, never the model |
-| 1:00–3:00 | Chat at `localhost:3000`: pick **Rahul Mehta** → "portfolio overview", then "show my retail properties". Switch to **Priya Shah** → "Show me my properties in Mumbai" | Live streaming tool steps; real figures (₹29.7 Cr); Alibaug correctly excluded from Mumbai; the demo banner, and what the dev stub is versus a real model |
+| 1:00–3:00 | Chat at `localhost:3000`. **With Gemini:** Rahul → "What does my portfolio look like?" → "Tell me about my retail properties" → "Which one is performing better?" → "What if I exclude the Bandra property?" (Hypothetical label) → "Change my Bandra retail property value to ₹12.5 crore" (Confirm card). **With the dev stub:** "portfolio overview", "show my retail properties", and Priya → "Show me my properties in Mumbai" | Streaming tool steps; figures come from tools (₹29.7 Cr); follow-up context; hypothetical vs. real; nothing is saved without Confirm; Alibaug excluded from Mumbai |
 | 3:00–4:30 | `/admin` → the conversation just created → execution trace | Spans, model and tool calls, the numeric-faithfulness result, "—" for tokens and cost the stub doesn't report; Basic auth on every admin page and API |
 | 4:30–6:30 | `SOUL.md` and the code: `src/agent/tools.ts`, `src/server/services/propertyActions.ts`, `src/domain/scenario.ts` | Strict schemas with no `userId`; propose → confirm (same-turn self-confirm is blocked); hypotheticals run on a clone; user scoping |
-| 6:30–8:30 | Terminal: `npm test` (278 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
+| 6:30–8:30 | Terminal: `npm test` (289 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
 | 8:30–10:00 | `PERFORMANCE.md` §2, §6, §7 | Measured: about 4 ms server overhead per turn and about 10 ms over local HTTP. Tool schemas are 83% of input tokens. **Not measured:** real LLM, Postgres, deployment. Next steps: prompt caching, a queue for WhatsApp, shared rate limits |
 
 ## External dependencies
@@ -357,4 +380,5 @@ Setup before presenting:
 | Dependency | Status |
 |---|---|
 | PostgreSQL | Optional (`DATA_BACKEND=prisma`). Local install, or Neon (free tier) for deployment |
-| OpenRouter API key | Not used in this submission. Without it the dev stub is used; OpenRouter itself is a paid service |
+| Google Gemini API key | Optional, free tier (Google AI Studio; keep billing disabled). Used for manual testing. Without it the dev stub is used |
+| OpenRouter API key | Not used. OpenRouter is a paid service |

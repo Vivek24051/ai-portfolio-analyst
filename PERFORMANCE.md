@@ -80,7 +80,7 @@ Golden set: **40 cases, 50 turns** across 9 categories (§3). The scores validat
 | Hypothetical labelling | 5/5 | 5/5 | 0/5 |
 | Safety violations | **0** | 0 | 0 |
 
-\* The dev stub echoes raw tool JSON, so its numbers trivially trace to tool output. This is why a separate figure-perturbing control is needed.
+\* The dev stub copies figures verbatim from tool output (first as raw JSON, now through fixed reply templates; the scores were identical both ways), so its numbers trivially trace to tool output. This is why a separate figure-perturbing control is needed.
 
 The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or % figure, so there was nothing to falsify. That's correct behaviour, not a gap in the check.
 
@@ -128,25 +128,25 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 
 **Case-level safety checks:** compare the store with the seed after the case. Any write the case didn't declare, any write to another user's property, or a missing expected write is a failure. Another user's property ids or names in a reply count as leakage, unless the user typed them first.
 
-**Unit and integration coverage** (`npm run test:coverage`, 278 tests):
+**Unit and integration coverage** (`npm run test:coverage`, 289 tests):
 
 | Measure | Coverage |
 |---|---|
-| Lines | 88.95% |
-| Statements | 86.88% |
-| Functions | 85.36% |
-| Branches | 73.38% |
+| Lines | 90.2% |
+| Statements | 88.15% |
+| Functions | 86.29% |
+| Branches | 75.49% |
 
 | Area | Line coverage |
 |---|---|
 | `src/domain` | 98.4% |
 | `src/lib` | 96.9% |
-| `src/agent` | 91.1% |
+| `src/agent` | 97.9% |
 | `src/components` | 91.9% |
-| `src/server` | 81.5% |
+| `src/server` | 83.3% |
 | `src/app` | 77.6% |
 
-`src/server/stores/prisma.ts`, `src/server/db.ts`, and `src/server/container.ts` are at **0%**: no test runs against a real database or the real container.
+`src/server/stores/prisma.ts` and `src/server/db.ts` are at **0%**, because no test runs against a real database. `src/server/container.ts` is at 33%: only its provider selection is tested, not the real wiring.
 
 ## 4. Where time goes, and what was done about it
 
@@ -172,7 +172,9 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 
 ## 5. Real-model evaluation: intentionally not performed (free-only scope)
 
-This submission is deliberately **free**. No OpenRouter or other LLM endpoint has been called, by any test, script, or benchmark, and none is needed to build, test, or run the app.
+This submission is deliberately **free**. No test, evaluation script, or benchmark calls an LLM endpoint, and none is needed to build, test, or run the app.
+
+**Gemini (free tier) is supported and was checked manually.** One manual chat turn ("What does my portfolio look like?" as U001) returned correct figures from the portfolio tool and stated the purchase-price gap honestly. No latency, token, cost, or accuracy figures were recorded for Gemini, so none are reported here. The 40-case evaluation was not run against it; doing so would need a Gemini mode in the runner and would consume a few hundred free-tier requests.
 
 What exists, so a real-model run could be added later without code changes:
 - `npm run eval -- --mode openrouter` replays the same 40 golden cases and graders against a real model.
@@ -185,8 +187,8 @@ The **workload** of such a run is known from offline measurement (§2.4): one pa
 
 | Measurement | Needs | Status |
 |---|---|---|
-| Real model latency, time to first token, tokens, and cost per turn | A real LLM via OpenRouter | Not performed (free-only scope) |
-| Real tool-selection, argument, faithfulness, and clarification accuracy | A real LLM via OpenRouter | Not performed (free-only scope) |
+| Real model latency, time to first token, tokens, and cost per turn | A real LLM (Gemini free tier is connectable) | Not measured. Gemini was only exercised manually |
+| Real tool-selection, argument, faithfulness, and clarification accuracy | A real LLM | Not measured. The golden set has not been run against Gemini |
 | Whether live OpenRouter responses carry `usage.cost` where we read it | A real LLM via OpenRouter | Verified only on synthetic payloads |
 | PostgreSQL latency for context load and persist; correctness of the Prisma store, migration, and seed | A configured Postgres database | Not performed: type-checked only, plus an offline migration-drift test |
 | Latency over the internet and from a deployment region | A deployment | Not performed (no deployment) |

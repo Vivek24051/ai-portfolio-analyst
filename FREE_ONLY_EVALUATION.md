@@ -1,6 +1,8 @@
 # Free-only evaluation
 
-Everything here runs **locally and offline at zero cost**. No step calls OpenRouter or any other LLM endpoint, uses a database, or needs an API key. Results come from mocked models, so they are **grader and control tests, not AI-quality results**.
+Everything here runs **locally and offline at zero cost**. No step calls OpenRouter, Gemini, or any other LLM endpoint, uses a database, or needs an API key. Results come from mocked models, so they are **grader and control tests, not AI-quality results**.
+
+(Separately, the app can be pointed at Google Gemini's free tier for **manual** demos; see the README, "Optional: connect Google Gemini". Nothing in this document uses it, and the tests mock it.)
 
 ## Prerequisites
 
@@ -14,7 +16,7 @@ Optional, to stop the build tools' anonymous telemetry pings (these are free and
 ## 1. The safety net: tests, types, build
 
 ```bash
-npm test            # 278 tests, all offline; models, storage and network are mocked
+npm test            # 289 tests, all offline; models, storage and network are mocked
 npm run typecheck   # tsc --noEmit
 npm run build       # prisma generate + next build; needs no environment variables
 ```
@@ -69,7 +71,7 @@ Absolute timings vary by machine. Neither benchmark includes LLM latency.
 npm run test:coverage
 ```
 
-Last result: 88.95% lines, 73.38% branches. The Prisma store, `db.ts`, and `container.ts` are at 0%, because no test uses a real database or the real container.
+Last result: 90.2% lines, 75.49% branches. The Prisma store and `db.ts` are at 0%, because no test uses a real database.
 
 ## 5. Intentionally not performed (needs real or paid infrastructure)
 

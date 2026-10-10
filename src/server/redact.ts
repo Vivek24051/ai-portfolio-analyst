@@ -5,6 +5,8 @@
 /** Whole-match secrets. */
 const SECRET_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{8,}/g, // OpenAI/OpenRouter-style keys
+  /AIza[0-9A-Za-z_-]{20,}/g, // Google API keys
+  /\bAQ\.[0-9A-Za-z_.-]{20,}/g, // Google key/token format seen in this project
   /Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
   /postgres(?:ql)?:\/\/[^\s"']+/gi, // connection strings carry passwords
 ];
@@ -14,7 +16,7 @@ const KEY_VALUE = /\b(api[_-]?key|authorization|password|passwd|secret|token)\b(
 
 export function redactSecrets(text: string, env: NodeJS.ProcessEnv = process.env): string {
   let out = text;
-  for (const key of ["OPENROUTER_API_KEY", "SESSION_SECRET", "ADMIN_PASSWORD", "DATABASE_URL", "DIRECT_URL"]) {
+  for (const key of ["OPENROUTER_API_KEY", "GEMINI_API_KEY", "SESSION_SECRET", "ADMIN_PASSWORD", "DATABASE_URL", "DIRECT_URL"]) {
     const v = env[key];
     if (v && v.length >= 6) out = out.split(v).join("[REDACTED]");
   }

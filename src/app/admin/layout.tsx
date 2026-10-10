@@ -20,7 +20,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <Link href="/admin/conversations?attention=1">Needs attention</Link>
         </nav>
         <span className="env">
-          <span className={`badge ${c.modelMode === "openrouter" ? "ok" : "warn"}`}>model: {c.modelMode}</span>{" "}
+          <span className={`badge ${c.modelMode !== "dev-stub" ? "ok" : "warn"}`}>model: {c.modelMode}</span>{" "}
           <span className={`badge ${c.dataBackend === "prisma" ? "ok" : "warn"}`}>data: {c.dataBackend}</span>{" "}
           <span className="muted">signed in as {admin}</span>
         </span>
