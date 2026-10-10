@@ -290,3 +290,41 @@ Verified offline against synthetic payloads (`tests/gemini.test.ts`) and checked
 
 ## D50. Markdown lists after a heading line
 Gemini writes "Key highlights:" followed directly by `* item` lines in the same block. The safe renderer now splits each block into runs of list and non-list lines, so these render as bullets instead of literal asterisks. It still never injects HTML.
+
+## D51. Explicit seed transaction limits
+The seed runs 16 sequential upserts in one all-or-nothing transaction. Prisma's defaults (5 s timeout, 2 s maxWait) are sized for queries within one region. From a laptop to a remote serverless database that may need to wake up, they can fail spuriously. The seed now uses `maxWait` 10 s and `timeout` 30 s: enough headroom for a manual, one-off operation without hiding a hung connection. Request-path transactions keep the defaults.
+
+## D52. `LLM_PROVIDER=stub` and fail-safe provider parsing
+A deployment needs a single switch that guarantees no model API is called, whatever secrets happen to be present. `stub` builds no model client at all.
+
+Any **unrecognised** non-empty value (a typo, `none`) now selects the stub, with a warning. Previously it fell through to OpenRouter whenever an OpenRouter key existed, which could have meant a paid call. An omitted `LLM_PROVIDER` keeps the original behaviour.
+
+## D53. Opt-in PostgreSQL integration suite with a positive-identification guard
+Mocks can't prove the Prisma layer, so `npm run test:db` runs the real client against a real database. Because it truncates and migrates, it refuses to run unless the target is positively a dedicated test database:
+- an explicit `TEST_DATABASE_URL`;
+- not production;
+- not the same database as any `DATABASE_URL` or `DIRECT_URL`;
+- a name containing `test`;
+- either empty (then marked with a database comment) or already marked.
+
+A comment is used rather than a marker table so that the schema-drift check stays clean. The suite is kept out of `npm test`, and its status test reports SKIPPED/ENABLED explicitly. **Executed:** it passed 10/10 against a local PostgreSQL 16 test database (Docker), both on a fresh database and on a second, already-marked run. After the hardening below, the suite (now 14 tests, including rolled-back catalog probes for a materialized view, a partitioned table, a non-`public` schema, a privilege-hidden table and a `postgres_fdw` foreign table) passed 14/14 on the same database. Not yet run against a hosted or pooled database.
+
+A review then hardened the guard to fail closed:
+- relations are read from `pg_catalog` (`pg_class` joined to `pg_namespace`), not `information_schema`:
+  - this is because `information_schema` is privilege-filtered and has no materialized views;
+  - it covers ordinary and partitioned tables, views, materialized views and foreign tables;
+  - it covers every schema except `pg_catalog`, `information_schema`, `pg_toast*` and temporary schemas;
+- URL settings are strict:
+  - names are lowercase and allow-listed;
+  - no setting may appear twice;
+  - `schema` must be exactly `public`;
+  - `options` is refused;
+- application URLs are compared from the process environment **and** from the `.env*` files:
+  - the files are read as text, never loaded or printed;
+  - the comparison fails closed on values it can't compare (`$` expansion, multi-line or unterminated values, non-URL text, unreadable files);
+- `current_database()` must match the URL, and the marker is written to that verified name;
+- a marked database may contain only this app's ordinary tables (`relkind = 'r'`);
+- the truncate is schema-qualified;
+- the Prisma CLI runs via Node with no shell, with the URL passed only in the environment and output redacted.
+
+Known limitation: host aliases are not resolved, for example `localhost` vs `127.0.0.1`, or a provider's pooled vs direct host. The name, empty-or-marked, and app-tables-only rules remain the backstop.

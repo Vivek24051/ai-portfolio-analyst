@@ -16,7 +16,7 @@ Optional, to stop the build tools' anonymous telemetry pings (these are free and
 ## 1. The safety net: tests, types, build
 
 ```bash
-npm test            # 289 tests, all offline; models, storage and network are mocked
+npm test            # 340 tests, all offline; models, storage and network are mocked
 npm run typecheck   # tsc --noEmit
 npm run build       # prisma generate + next build; needs no environment variables
 ```
@@ -71,7 +71,9 @@ Absolute timings vary by machine. Neither benchmark includes LLM latency.
 npm run test:coverage
 ```
 
-Last result: 90.2% lines, 75.49% branches. The Prisma store and `db.ts` are at 0%, because no test uses a real database.
+Last measured result (an earlier run of 325 tests; coverage hasn't been re-measured since): 90.3% lines, 76.09% branches.
+
+The Prisma store and `db.ts` show 0% there because the ordinary `npm test` suite uses no database. PostgreSQL integration behaviour is exercised instead by the separate opt-in `npm run test:db` suite, which isn't included in coverage. That suite checks storage, migration, and seed behaviour only; it says nothing about real-model answer quality.
 
 ## 5. Intentionally not performed (needs real or paid infrastructure)
 
@@ -80,7 +82,7 @@ Last result: 90.2% lines, 75.49% branches. The Prisma store and `db.ts` are at 0
 | Real-LLM tool selection, accuracy, faithfulness, clarification | Needs a paid model API |
 | Real model latency, time to first token, token usage, cost | Needs a paid model API |
 | Live OpenRouter response format (e.g. where `usage.cost` appears) | Needs the live API. Verified only on synthetic payloads (`tests/openrouter.test.ts`) |
-| Prisma store, migration, and seed against PostgreSQL | Needs a database. Type-checked, plus an offline migration-drift test |
+| Prisma store, migration, and seed against PostgreSQL | Needs a database. The opt-in suite `npm run test:db` **passed 14/14** against a local PostgreSQL 16 test database (Docker); it skips without `TEST_DATABASE_URL` (see the README section "Opt-in PostgreSQL integration tests"). A hosted or pooled database (e.g. Neon) has not been tested. |
 | Deployment, internet latency, concurrent load | No deployment; single local client only |
 
 The runner's `--mode openrouter` exists for a future real-model evaluation. It is **not** part of this free-only process and refuses to run without explicit opt-in flags (`EVAL_ALLOW_PAID=1`, `--confirm-paid`) and spend caps.

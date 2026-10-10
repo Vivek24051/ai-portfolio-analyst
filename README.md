@@ -158,6 +158,18 @@ How this connection works:
 
 (OpenRouter is also supported, through `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL`, but it is a paid service and is not used here.)
 
+### Forcing the dev stub (`LLM_PROVIDER=stub`)
+
+`LLM_PROVIDER=stub` always selects the dev stub, even if `GEMINI_API_KEY` or `OPENROUTER_API_KEY` is set. No model client is created and no model API can be called. Use it for a first deployment or any no-cost demo.
+
+| `LLM_PROVIDER` | Result |
+|---|---|
+| `stub` | Dev stub, always |
+| `gemini` | Gemini if `GEMINI_API_KEY` and `LLM_PRIMARY_MODEL` are set, otherwise the dev stub |
+| `openrouter` | OpenRouter (paid) if its key and model are set, otherwise the dev stub |
+| omitted | OpenRouter if its key and model are set, otherwise the dev stub (the original behaviour) |
+| anything else (a typo, `none`, …) | Dev stub, with a warning in the server log. It never falls through to a paid provider |
+
 ### Database (optional)
 
 The initial migration [`prisma/migrations/20261010000000_init`](prisma/migrations/) was **generated offline** from `schema.prisma` with `prisma migrate diff`. A test (`tests/migration.test.ts`) regenerates it and fails if it drifts from the schema.
@@ -168,7 +180,63 @@ To use Postgres:
 3. `npm run db:seed` loads users and properties. Running it again is safe. `npm run db:seed:dry` validates the CSVs without touching a database.
 4. For future schema changes, use `npm run db:migrate` (`prisma migrate dev`) against a development database.
 
-**Not yet verified:** applying the migration to a live Postgres, the Postgres seed, and the Prisma store implementation. All three are type-checked only.
+The Prisma CLI reads `.env`, not `.env.local`, so set `DATABASE_URL` and `DIRECT_URL` in the shell (or a git-ignored `.env`) when running the `db:*` commands. The seed runs as one all-or-nothing transaction, with a raised time limit (`prisma/seedDatabase.ts`) so that it can run against a remote database.
+
+#### Opt-in PostgreSQL integration tests (`npm run test:db`)
+
+`tests/db/prisma.dbtest.ts` runs the real Prisma client against a real PostgreSQL database. It covers:
+- applying the migrations, and checking that the result matches the schema (no drift);
+- the seed, including that it can be re-run safely;
+- user-scoped queries;
+- conversation, run, and tool-call persistence, read back through a second client;
+- propose → confirm, including the audit row and optimistic locking;
+- admin attention data.
+
+It is **not** part of `npm test`, and it is **skipped** unless `TEST_DATABASE_URL` is set. Its guard (`tests/db/guard.ts`, unit-tested offline) **fails closed**.
+
+Before connecting, it requires **all** of:
+- an explicit `TEST_DATABASE_URL` (it never falls back to `DATABASE_URL`);
+- a non-production environment (not production, not Vercel);
+- a URL that isn't the same database (same host, port and database name) as any `DATABASE_URL` or `DIRECT_URL`. It checks the process environment and the files `.env`, `.env.local`, `.env.development`, `.env.development.local`, `.env.test`, `.env.test.local`, `.env.production` and `.env.production.local`. The files are read as text: never loaded into the environment, and their values are never printed. Comments, `export`, whitespace, CRLF and quoted values are handled. It **fails closed** on any value it can't compare: `$` expansion, multi-line or unterminated values, non-URL text, a postgres URL without a database name, or an unreadable file;
+- a database **name containing `test`**;
+- strict URL settings:
+  - names must be lowercase and allow-listed;
+  - no setting may appear twice;
+  - `schema`, if present, must be exactly `public`;
+  - `options` (which can change `search_path`) is refused.
+
+Before any write, it runs **read-only** checks:
+- `current_database()` must match the URL's database name;
+- relations are listed from `pg_catalog` (`pg_class` joined to `pg_namespace`), **not** from `information_schema`, which hides objects the role lacks privileges on and omits materialized views.
+  - It covers ordinary and partitioned tables, views, materialized views and foreign tables.
+  - It covers every schema except `pg_catalog`, `information_schema`, `pg_toast*` and temporary schemas, so an empty `public` schema can't authorise a wipe elsewhere.
+- an **unmarked** database must contain **no relations at all**; it is then marked, using the verified `current_database()`;
+- a **marked** database may contain only this app's own **ordinary tables** in `public`. For example, a view, materialized view, foreign table or partitioned table named like an app table is refused.
+
+Anything else is refused before any marker write, migration, or truncate.
+
+**Known limitation:** host names are compared as text, not resolved. So `localhost` and `127.0.0.1`, or a provider's pooled and direct host names, count as different hosts. The test-name rule, the empty-or-marked rule, and the marked-database table check are what still protect against an alias.
+
+The Prisma CLI is run directly by Node, with no shell and no `npx`. The database URL travels only through the child process's environment, never on a command line, and output is redacted. The drift check uses `--from-schema-datasource`.
+
+Safe local run (free), against a **dedicated, empty** test database, for example a local Docker container.
+
+bash:
+```
+TEST_DATABASE_URL="postgresql://<user>:<password>@localhost:<port>/portfolio_analyst_test" npm run test:db
+```
+
+Windows PowerShell (set for this terminal session only, so it is not saved to any file):
+```powershell
+$env:TEST_DATABASE_URL = "postgresql://<user>:<password>@localhost:<port>/portfolio_analyst_test"
+npm run test:db
+Remove-Item Env:TEST_DATABASE_URL
+```
+
+If the password contains URL-special characters (`@ : / ? # & %`), percent-encode it, e.g. `@` → `%40`.
+The suite migrates the database, then truncates and re-seeds its tables between groups of tests. Use a dedicated test database only.
+
+**Verified locally:** `npm run test:db` passed 14/14 against a local PostgreSQL 16 test database (Docker), including the rolled-back guard probes. An earlier 10-test version passed on both a fresh database and a second run of the already-marked one. **Not verified:** a hosted database such as Neon, its connection pooler, and the full HTTP app running with `DATA_BACKEND=prisma`.
 
 ### Sessions
 
@@ -344,7 +412,7 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 - **Systematic real-model evaluation.** Gemini (free tier) has been used manually in the chat, but the 40-case evaluation has **not** been run against it. Its latency, tokens, and accuracy are not measured or reported (PERFORMANCE.md §5).
 - Live OpenRouter responses. The integration is verified only against synthetic payloads in OpenRouter's documented format.
 - Deployment. The app has not been deployed, so there is no live URL, and no internet latency or concurrent-load measurement.
-- The Prisma store, the migration and the seed against a live Postgres. This includes the admin queries (`AdminStore` over Prisma): the admin tests run on the in-memory store, which does **not** demonstrate PostgreSQL persistence.
+- PostgreSQL beyond the opt-in suite. The Prisma store, migration, seed, and admin queries passed `npm run test:db` on a local PostgreSQL 16 test database (Docker), but **not** on a hosted or pooled database (e.g. Neon), and the full HTTP app has not been exercised with `DATA_BACKEND=prisma`. The regular `npm test` suites use the in-memory store.
 - The UI in a real browser (it is covered by jsdom tests and an HTTP smoke test only) and with real streamed LLM output.
 
 ## Known limitations
@@ -353,7 +421,7 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 - **No real authentication.** The demo user picker with a signed cookie is the agreed scope.
 - **In-memory data** resets when the server restarts, and each serverless instance has its own copy. Use `DATA_BACKEND=prisma` for persistence.
 - **Per-instance limits.** The chat rate limit (`CHAT_RATE_LIMIT_PER_MIN`, default 20 messages per minute per user) is per server instance.
-- **Postgres untested.** The Prisma store, the init migration, and the Postgres seed have not been run against a live database (see "Database").
+- **Postgres only locally verified.** The Prisma layer passed the opt-in integration suite on a local PostgreSQL 16 test database (Docker); a hosted or pooled database has not been tested (see "Database").
 - **UI tested without a browser.** The UI has been tested in jsdom and over local HTTP, but not in a real browser by an automated test, and not with a real LLM's streamed output.
 - **Admin auth** is single-account HTTP Basic auth: there is no logout (close the browser), no roles, and the lockout counter is per server instance.
 - **Token usage and cost** are recorded only if the provider reports them. The cost field's location was verified on synthetic OpenRouter payloads only.
@@ -372,7 +440,7 @@ Setup before presenting:
 | 1:00–3:00 | Chat at `localhost:3000`. **With Gemini:** Rahul → "What does my portfolio look like?" → "Tell me about my retail properties" → "Which one is performing better?" → "What if I exclude the Bandra property?" (Hypothetical label) → "Change my Bandra retail property value to ₹12.5 crore" (Confirm card). **With the dev stub:** "portfolio overview", "show my retail properties", and Priya → "Show me my properties in Mumbai" | Streaming tool steps; figures come from tools (₹29.7 Cr); follow-up context; hypothetical vs. real; nothing is saved without Confirm; Alibaug excluded from Mumbai |
 | 3:00–4:30 | `/admin` → the conversation just created → execution trace | Spans, model and tool calls, the numeric-faithfulness result, "—" for tokens and cost the stub doesn't report; Basic auth on every admin page and API |
 | 4:30–6:30 | `SOUL.md` and the code: `src/agent/tools.ts`, `src/server/services/propertyActions.ts`, `src/domain/scenario.ts` | Strict schemas with no `userId`; propose → confirm (same-turn self-confirm is blocked); hypotheticals run on a clone; user scoping |
-| 6:30–8:30 | Terminal: `npm test` (289 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
+| 6:30–8:30 | Terminal: `npm test` (340 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
 | 8:30–10:00 | `PERFORMANCE.md` §2, §6, §7 | Measured: about 4 ms server overhead per turn and about 10 ms over local HTTP. Tool schemas are 83% of input tokens. **Not measured:** real LLM, Postgres, deployment. Next steps: prompt caching, a queue for WhatsApp, shared rate limits |
 
 ## External dependencies

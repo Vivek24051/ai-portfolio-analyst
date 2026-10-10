@@ -128,14 +128,14 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 
 **Case-level safety checks:** compare the store with the seed after the case. Any write the case didn't declare, any write to another user's property, or a missing expected write is a failure. Another user's property ids or names in a reply count as leakage, unless the user typed them first.
 
-**Unit and integration coverage** (`npm run test:coverage`, 289 tests):
+**Unit and integration coverage** (`npm run test:coverage`; an earlier run of 325 tests, not re-measured since):
 
 | Measure | Coverage |
 |---|---|
-| Lines | 90.2% |
-| Statements | 88.15% |
-| Functions | 86.29% |
-| Branches | 75.49% |
+| Lines | 90.3% |
+| Statements | 88.33% |
+| Functions | 86.47% |
+| Branches | 76.09% |
 
 | Area | Line coverage |
 |---|---|
@@ -143,10 +143,10 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 | `src/lib` | 96.9% |
 | `src/agent` | 97.9% |
 | `src/components` | 91.9% |
-| `src/server` | 83.3% |
+| `src/server` | 84.0% |
 | `src/app` | 77.6% |
 
-`src/server/stores/prisma.ts` and `src/server/db.ts` are at **0%**, because no test runs against a real database. `src/server/container.ts` is at 33%: only its provider selection is tested, not the real wiring.
+`src/server/stores/prisma.ts` and `src/server/db.ts` show **0%** here, because `npm test` uses no database. The Prisma layer is exercised by the separate opt-in `npm run test:db` suite, which passed 14/14 against a local PostgreSQL 16 test database (Docker) and isn't included in these coverage figures. `src/server/container.ts` is at 46%: only its provider selection is tested, not the real wiring.
 
 ## 4. Where time goes, and what was done about it
 
@@ -190,7 +190,8 @@ The **workload** of such a run is known from offline measurement (§2.4): one pa
 | Real model latency, time to first token, tokens, and cost per turn | A real LLM (Gemini free tier is connectable) | Not measured. Gemini was only exercised manually |
 | Real tool-selection, argument, faithfulness, and clarification accuracy | A real LLM | Not measured. The golden set has not been run against Gemini |
 | Whether live OpenRouter responses carry `usage.cost` where we read it | A real LLM via OpenRouter | Verified only on synthetic payloads |
-| PostgreSQL latency for context load and persist; correctness of the Prisma store, migration, and seed | A configured Postgres database | Not performed: type-checked only, plus an offline migration-drift test |
+| Correctness of the Prisma store, migration, and seed | A Postgres database | **Verified** with `npm run test:db` (14/14) on a local PostgreSQL 16 test database (Docker) |
+| PostgreSQL latency for context load and persist; a hosted or pooled database (e.g. Neon) | A hosted database | Not measured or tested |
 | Latency over the internet and from a deployment region | A deployment | Not performed (no deployment) |
 | Behaviour under concurrent load | A load test | Not performed (single sequential client only) |
 
