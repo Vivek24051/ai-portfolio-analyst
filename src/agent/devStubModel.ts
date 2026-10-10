@@ -1,5 +1,5 @@
-// DEV STUB — not an LLM. A keyword router that lets the chat UI and API run locally without an
-// OpenRouter key or any paid call. It exercises the real graph, tools and persistence, but its
+// DEV STUB — not an LLM. A keyword router that lets the chat UI and API run locally without any
+// model API key or any paid call. It exercises the real graph, tools and persistence, but its
 // "understanding" is a handful of regexes, and its answers are fixed templates over the tool output.
 // Replies are prefixed so nobody mistakes it for the agent.
 
@@ -26,7 +26,7 @@ function route(text: string): AIMessage {
   if (city) return call("search_properties", { filter: { city } });
   if (/total|overview|look like|summary|worth|portfolio/.test(t)) return call("portfolio_analytics", {});
   return new AIMessage(
-    `${PREFIX} Set OPENROUTER_API_KEY and LLM_PRIMARY_MODEL to enable the real agent. ` +
+    `${PREFIX} To use a real model, set LLM_PROVIDER (gemini or openrouter), that provider's API key, and LLM_PRIMARY_MODEL; LLM_PROVIDER=stub always keeps this stub. ` +
       `Stub demos: "portfolio overview", "show my retail properties", "properties in Mumbai", "highest rent".`,
   );
 }

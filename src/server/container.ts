@@ -4,8 +4,11 @@ import "server-only";
 //   DATA_BACKEND=memory (default)  in-memory stores seeded from data/seed/*.csv; resets on restart
 //   DATA_BACKEND=prisma            PostgreSQL via Prisma (requires DATABASE_URL + migrations)
 //
-//   OPENROUTER_API_KEY + LLM_PRIMARY_MODEL set → OpenRouter (optional LLM_FALLBACK_MODEL)
-//   otherwise                                   → dev stub model (no LLM, no cost)
+//   LLM_PROVIDER=stub                                            → dev stub, always (keys ignored)
+//   LLM_PROVIDER=gemini + GEMINI_API_KEY + LLM_PRIMARY_MODEL      → Google Gemini (optional LLM_FALLBACK_MODEL)
+//   LLM_PROVIDER=openrouter or omitted + OPENROUTER_API_KEY + LLM_PRIMARY_MODEL
+//                                                                → OpenRouter (paid; optional LLM_FALLBACK_MODEL)
+//   unrecognised LLM_PROVIDER, missing key/model, or nothing set → dev stub model (no LLM, no cost)
 
 import { readFileSync } from "node:fs";
 import { seedFile } from "@/data/paths";
@@ -38,6 +41,14 @@ async function createStores(backend: "memory" | "prisma"): Promise<Stores> {
 }
 
 export function createRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"] } {
+  if (config.unrecognizedProvider) {
+    // Never echo the value: a mis-pasted secret would otherwise land in server logs.
+    console.warn("[container] unrecognised LLM_PROVIDER value; using the dev stub (expected: stub, gemini, openrouter)");
+  }
+  if (config.provider === "stub") {
+    // Forced stub: no model client is constructed at all, whatever keys are present.
+    return devStubRouter(config);
+  }
   if (config.provider === "gemini") {
     if (config.geminiApiKey && config.primaryModel) {
       const key = config.geminiApiKey;
@@ -51,7 +62,7 @@ export function createRouter(config: AgentConfig): { router: ModelRouter; modelM
       };
     }
     console.warn("[container] LLM_PROVIDER=gemini but GEMINI_API_KEY or LLM_PRIMARY_MODEL is missing; using the dev stub");
-  } else if (config.openRouterApiKey && config.primaryModel) {
+  } else if ((config.provider === null || config.provider === "openrouter") && config.openRouterApiKey && config.primaryModel) {
     return {
       modelMode: "openrouter",
       router: {
@@ -61,6 +72,10 @@ export function createRouter(config: AgentConfig): { router: ModelRouter; modelM
       },
     };
   }
+  return devStubRouter(config);
+}
+
+function devStubRouter(config: AgentConfig): { router: ModelRouter; modelMode: Container["modelMode"] } {
   // DEV_STUB_STREAM_DELAY_MS: artificial per-word delay for demos (default 12); 0 for benchmarks.
   const delay = Number(process.env.DEV_STUB_STREAM_DELAY_MS);
   const stub = createDevStubModel(Number.isFinite(delay) && delay >= 0 ? { streamDelayMs: delay } : {});
