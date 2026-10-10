@@ -6,20 +6,34 @@ import { jwtVerify, SignJWT } from "jose";
 export const SESSION_COOKIE = "pa_session";
 export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-const DEV_SECRET = "dev-only-insecure-session-secret-change-me-0123456789";
+// Public, intentionally weak, and only ever accepted in local development/test (see secretKey).
+const DEV_ONLY_SECRET = "dev-only-insecure-session-secret-change-me-0123456789";
+const MIN_SECRET_LENGTH = 32;
 let warned = false;
 
-function secretKey(): Uint8Array {
-  const secret = process.env.SESSION_SECRET;
-  if (secret && secret.length >= 32) return new TextEncoder().encode(secret);
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("SESSION_SECRET (≥32 chars) must be set in production");
+export class SessionConfigError extends Error {}
+
+/**
+ * Resolves the HMAC key. Fails closed:
+ *  - SESSION_SECRET set → must be ≥ 32 chars and must not be the published dev value.
+ *  - not set → allowed only when NODE_ENV is explicitly "development" or "test".
+ *    Production, preview, or an unset NODE_ENV all throw — there is no production fallback.
+ */
+export function secretKey(env: NodeJS.ProcessEnv = process.env): Uint8Array {
+  const secret = env.SESSION_SECRET?.trim();
+  if (secret) {
+    if (secret.length < MIN_SECRET_LENGTH) throw new SessionConfigError(`SESSION_SECRET must be at least ${MIN_SECRET_LENGTH} characters`);
+    if (secret === DEV_ONLY_SECRET) throw new SessionConfigError("SESSION_SECRET must not be the published development value");
+    return new TextEncoder().encode(secret);
+  }
+  if (env.NODE_ENV !== "development" && env.NODE_ENV !== "test") {
+    throw new SessionConfigError("SESSION_SECRET is required outside local development");
   }
   if (!warned) {
-    console.warn("[session] SESSION_SECRET not set; using an insecure development secret");
+    console.warn("[session] SESSION_SECRET not set; using an insecure development-only secret");
     warned = true;
   }
-  return new TextEncoder().encode(DEV_SECRET);
+  return new TextEncoder().encode(DEV_ONLY_SECRET);
 }
 
 export async function createSessionToken(userId: string): Promise<string> {
