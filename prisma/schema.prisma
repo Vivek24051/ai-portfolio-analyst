@@ -1,0 +1,223 @@
+// Data model for the AI Real Estate Portfolio Analyst.
+//
+// Money is stored as BigInt whole rupees: Postgres int4 tops out at ~₹214 Cr, which a
+// single large office could exceed. Repositories convert to number after a
+// safe-integer check (Number.MAX_SAFE_INTEGER ≈ ₹9×10^14 Cr).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum AssetClass {
+  RETAIL
+  OFFICE
+  RESIDENTIAL
+}
+
+enum OccupancyStatus {
+  TENANTED
+  VACANT
+  SELF_OCCUPIED
+}
+
+enum PropertyStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  TOOL
+}
+
+enum RunStatus {
+  OK
+  ERROR
+}
+
+enum PendingActionType {
+  CREATE_PROPERTY
+  UPDATE_PROPERTY
+}
+
+enum PendingActionStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+}
+
+model User {
+  id                          String  @id
+  name                        String
+  city                        String
+  preferences                 String
+  preferredLocations          String
+  /// Raw CSV value — mixes single numbers and ranges ("30000000-80000000").
+  portfolioValuePreferenceRaw String
+  /// Parsed bounds; a single number is stored as min = max. Meaning is undefined in the brief,
+  /// so these are context only and never used in calculations.
+  prefMinInr                  BigInt?
+  prefMaxInr                  BigInt?
+
+  properties     Property[]
+  conversations  Conversation[]
+  pendingActions PendingAction[]
+  createdAt      DateTime       @default(now())
+}
+
+model Property {
+  id                 String          @id @default(cuid())
+  userId             String
+  user               User            @relation(fields: [userId], references: [id])
+  /// Label exactly as received ("Commercial Office", "Office", ...).
+  propertyTypeRaw    String
+  /// Normalised class used for every calculation.
+  assetClass         AssetClass
+  subType            String?
+  /// Original free-text location ("Bandra West, Mumbai").
+  locationRaw        String
+  locality           String
+  city               String
+  /// Set when the second location segment is a state, not a city ("Alibaug, Maharashtra").
+  state              String?
+  areaSqft           Int
+  currentValueInr    BigInt
+  /// Blank for every seed row; nullable on purpose — never imputed.
+  purchasePriceInr   BigInt?
+  annualRentInr      BigInt          @default(0)
+  occupancyStatus    OccupancyStatus
+  ownershipPercent   Float           @default(100)
+  status             PropertyStatus  @default(ACTIVE)
+  /// "seed" or "chat" — where the record came from.
+  source             String          @default("chat")
+  /// Optimistic-locking counter; confirmed updates must match the proposed version.
+  version            Int             @default(1)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  audits PropertyAudit[]
+
+  @@index([userId])
+}
+
+model Conversation {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  /// Backend-owned follow-up state: focus property ids, active scenario, etc.
+  state           Json      @default("{}")
+  needsAttention  Boolean   @default(false)
+  attentionReason String?
+  createdAt       DateTime  @default(now())
+  lastMessageAt   DateTime  @default(now())
+
+  messages       Message[]
+  runs           AgentRun[]
+  pendingActions PendingAction[]
+
+  @@index([userId])
+  @@index([needsAttention, lastMessageAt])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  content        String
+  /// Assistant tool-call requests or a tool result payload (compact).
+  toolCalls      Json?
+  toolCallId     String?
+  toolName       String?
+  runId          String?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+/// One row per user turn: the full latency/cost breakdown for that turn.
+model AgentRun {
+  id               String       @id @default(cuid())
+  conversationId   String
+  conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId           String
+  status           RunStatus
+  model            String?
+  fallbackUsed     Boolean      @default(false)
+  totalMs          Int?
+  llmMs            Int?
+  toolMs           Int?
+  llmCalls         Int          @default(0)
+  toolCallCount    Int          @default(0)
+  promptTokens     Int?
+  completionTokens Int?
+  costUsd          Float?
+  error            String?
+  /// Per-span timings (context load, each LLM call with TTFT, persistence).
+  timings          Json?
+  startedAt        DateTime     @default(now())
+
+  toolCalls ToolCall[]
+
+  @@index([conversationId, startedAt])
+}
+
+model ToolCall {
+  id             String   @id @default(cuid())
+  runId          String
+  run            AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  name           String
+  args           Json
+  result         Json?
+  ok             Boolean
+  error          String?
+  durationMs     Int
+  createdAt      DateTime @default(now())
+
+  @@index([runId])
+}
+
+model PendingAction {
+  id              String              @id @default(cuid())
+  conversationId  String
+  conversation    Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User                @relation(fields: [userId], references: [id])
+  type            PendingActionType
+  propertyId      String?
+  /// Validated, normalised write payload.
+  payload         Json
+  /// Human-readable before/after shown on the confirmation card.
+  diff            Json
+  /// Property version observed at proposal time (updates only).
+  expectedVersion Int?
+  status          PendingActionStatus @default(PENDING)
+  createdInRunId  String
+  expiresAt       DateTime
+  createdAt       DateTime            @default(now())
+  resolvedAt      DateTime?
+
+  @@index([conversationId, status])
+}
+
+model PropertyAudit {
+  id              String   @id @default(cuid())
+  propertyId      String
+  property        Property @relation(fields: [propertyId], references: [id])
+  userId          String
+  action          String
+  before          Json?
+  after           Json
+  pendingActionId String?
+  createdAt       DateTime @default(now())
+
+  @@index([propertyId])
+}

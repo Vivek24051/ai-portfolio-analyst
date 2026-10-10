@@ -1,0 +1,26 @@
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# env files hold secrets (OpenRouter key, DB URL, cookie secret)
+.env
+.env.*
+!.env.example
+
+# eval run outputs can be regenerated; summaries are committed under docs/
+eval/results/*.jsonl
+
+.vercel
+.DS_Store
+
+# Assignment-provided files are kept out of the repo (owner's instruction).
+# Seed/tests read data/original/ — see README "Dataset files" for how to provide them.
+/AI-Portfolio-Analyst-Assignment.pdf
+/DATASET.md
+/users.csv
+/properties.csv
+/sample_requests.csv
+/data/original/
