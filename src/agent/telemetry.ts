@@ -6,6 +6,9 @@ import type { ToolCallRecord } from "@/server/stores/types";
 export interface LlmCallRecord {
   model: string;
   ms: number;
+  /** Time to first streamed token; null when the call was not streamed or produced no text. */
+  ttftMs: number | null;
+  streamed: boolean;
   ok: boolean;
   error: string | null;
   isFallback: boolean;

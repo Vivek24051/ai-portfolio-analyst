@@ -21,6 +21,7 @@ export async function GET(req: NextRequest) {
       currentUserId: users.some((u) => u.id === currentId) ? currentId : null,
       users: users.map((u) => ({ id: u.id, name: u.name, city: u.city })),
       modelMode: c.modelMode,
+      dataBackend: c.dataBackend,
     });
   } catch (e) {
     return errorResponse(e);

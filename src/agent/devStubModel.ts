@@ -29,16 +29,32 @@ function route(text: string): AIMessage {
   );
 }
 
-export function createDevStubModel(): ChatModel {
+function respond(messages: BaseMessage[]): AIMessage {
+  const last = messages.at(-1);
+  if (last && ToolMessage.isInstance(last)) {
+    return new AIMessage(`${PREFIX} Raw tool result:\n${String(last.content).slice(0, 1500)}`);
+  }
+  const human = [...messages].reverse().find((m) => HumanMessage.isInstance(m));
+  return route(human ? String(human.content) : "");
+}
+
+/** Word-by-word pseudo-streaming so the UI's streaming path can be demoed without an LLM. */
+export function createDevStubModel(opts: { streamDelayMs?: number } = {}): ChatModel {
+  const delay = opts.streamDelayMs ?? 12;
   return {
     id: DEV_STUB_ID,
-    async invoke(messages: BaseMessage[]) {
-      const last = messages.at(-1);
-      if (last && ToolMessage.isInstance(last)) {
-        return new AIMessage(`${PREFIX} Raw tool result:\n${String(last.content).slice(0, 1500)}`);
+    async invoke(messages) {
+      return respond(messages);
+    },
+    async stream(messages, { signal }, onDelta) {
+      const message = respond(messages);
+      const text = typeof message.content === "string" ? message.content : "";
+      for (const piece of text.match(/\S+\s*/g) ?? []) {
+        if (signal.aborted) break;
+        onDelta(piece);
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
       }
-      const human = [...messages].reverse().find((m) => HumanMessage.isInstance(m));
-      return route(human ? String(human.content) : "");
+      return message;
     },
   };
 }

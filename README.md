@@ -9,7 +9,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 > | 0 | Scaffold, schema, seed | ✅ |
 > | 1 | Domain core and tests | ✅ |
 > | 2 | Agent, tools, memory, chat API | ✅ (tested with mocked models) |
-> | 3 | Chat UI | ⏳ |
+> | 3 | Chat UI + streaming | ✅ (UI tested in jsdom; not yet with a real LLM) |
 > | 4 | Admin and observability | ⏳ |
 > | 5 | Evaluation and performance | ⏳ |
 > | 6 | Docs and deploy prep | ⏳ |
@@ -64,10 +64,15 @@ src/
     session.ts         Signed HTTP-only demo-user cookie (jose, HS256)
     container.ts       Picks the data backend and the model from env
   app/api/
-    chat/route.ts          POST: one turn
-    chat/actions/route.ts  POST: Confirm/Cancel button (no LLM)
-    session/route.ts       GET/POST/DELETE: demo-user picker
-prisma/                schema.prisma, seed.ts
+    chat/route.ts               POST: one turn (JSON)
+    chat/stream/route.ts        POST: one turn as Server-Sent Events
+    chat/actions/route.ts       POST: Confirm/Cancel button (no LLM)
+    conversations/route.ts      GET: the user's conversations
+    conversations/[id]/route.ts GET: display-ready transcript + open proposal
+    session/route.ts            GET/POST/DELETE: demo-user picker
+  components/        ChatApp, MessageBubble, PendingActionCard, Composer, UserPicker
+  lib/               chatState (pure reducer), chatClient (fetch + SSE), sse, richText (safe rendering)
+prisma/                schema.prisma, seed.ts, migrations/ (init migration, generated offline)
 tests/                 Vitest suites
 ```
 
@@ -85,11 +90,23 @@ npm run dev              # http://localhost:3000; in-memory data + dev stub mode
 
 Optional, to use a real model: copy `.env.example` to `.env` and set `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL` (and optionally `LLM_FALLBACK_MODEL`). OpenRouter usage is paid.
 
-Optional, to use Postgres:
-1. Set `DATA_BACKEND=prisma`, `DATABASE_URL` and `DIRECT_URL`.
-2. Run `npm run db:migrate`, then `npm run db:seed`. Use `npm run db:seed:dry` to validate the CSVs without touching a database.
+### Database (optional)
 
-Production (`next start`) refuses to issue sessions unless `SESSION_SECRET` (≥ 32 characters) is set.
+The initial migration [`prisma/migrations/20261010000000_init`](prisma/migrations/) was **generated offline** from `schema.prisma` with `prisma migrate diff`. A test (`tests/migration.test.ts`) regenerates it and fails if it drifts from the schema.
+
+To use Postgres:
+1. Set `DATA_BACKEND=prisma`, `DATABASE_URL`, and `DIRECT_URL` (for Neon: the pooled and direct URLs).
+2. `npm run db:deploy` applies the committed migrations (`prisma migrate deploy`).
+3. `npm run db:seed` loads users and properties. Running it again is safe. `npm run db:seed:dry` validates the CSVs without touching a database.
+4. For future schema changes, use `npm run db:migrate` (`prisma migrate dev`) against a development database.
+
+**Not yet verified:** applying the migration to a live Postgres, the Postgres seed, and the Prisma store implementation. All three are type-checked only.
+
+### Sessions
+
+The demo-user cookie is signed with `SESSION_SECRET`.
+- Outside `NODE_ENV=development` or `test` (production, preview, or unset), the app **requires** a `SESSION_SECRET` of at least 32 characters. There is no production fallback.
+- The built-in development secret is rejected even if someone sets it explicitly.
 
 ## Dataset files
 
@@ -106,9 +123,30 @@ These files are **read-only inputs**. They are never edited; normalisation happe
 
 The assignment PDF and the original root-level copies are deliberately not committed (`.gitignore`).
 
+## Chat UI
+
+`npm run dev` and open http://localhost:3000.
+
+- **Demo sign-in.** Pick a client: the server sets a signed HTTP-only cookie. The browser never sends a user id.
+- **WhatsApp-style chat.** Conversation list in the sidebar (a drawer on mobile), message history, suggestion chips, light and dark theme.
+- **Streaming.** While the agent works you see "Thinking…", then each tool step as it runs ("Looking up your properties — 3 matches"), then the answer as it is generated.
+- **Hypothetical answers** have a dashed amber border and the banner "🔮 Hypothetical scenario — your real portfolio is unchanged".
+- **Proposed changes** appear as a card with a before/after table and the label **Not saved yet**:
+  - **Confirm** calls the LLM-free endpoint.
+  - **Edit** pre-fills the message box so you can revise the proposal.
+  - **Cancel** drops it.
+  - Expired proposals can't be confirmed.
+- **Tool activity.** Each answer has a collapsible "how I worked this out" list showing tool labels and outcomes only. Raw arguments and results never reach the browser.
+- **Errors.** Network failures, rate limits, and model outages show an inline error with **Retry**. A message that never reached the server is re-sent rather than duplicated.
+- **Demo mode banner.** Shown when no LLM is configured (dev stub) and when data is in memory.
+- **Rendering.** Model text is rendered without `dangerouslySetInnerHTML`; only bold and simple lists are formatted.
+
 ## How a chat turn works
 
-1. `POST /api/chat` takes `{message, conversationId?}`. The body is checked by a strict schema: an extra field such as `userId` gets a 400. The user id comes **only** from the signed cookie.
+1. `POST /api/chat/stream` (used by the UI) or `POST /api/chat` (JSON) takes `{message, conversationId?}`.
+   - Auth, body validation, rate limit, and conversation ownership are all checked **before** the stream opens, so those failures are ordinary HTTP errors.
+   - The stream sends `start`, `status`, `tool_start` / `tool_end`, `delta`, `reset`, and finally `done` or `error`.
+   - If the client disconnects, the turn still completes and is saved. The body is checked by a strict schema: an extra field such as `userId` gets a 400. The user id comes **only** from the signed cookie.
 2. The service loads the conversation (scoped to that user), the last 30 messages (the window always starts at a user message), the structured state, and the user's properties.
 3. The system prompt contains:
    - the rules from SOUL.md
@@ -150,21 +188,27 @@ All of these are recorded in [DECISIONS.md](DECISIONS.md).
 | `agent` | LangGraph loop, fallback, timeouts, memory, chat service | **Model**: scripted fake. Persistence: in-memory |
 | `api` | Route handlers, cookie auth, body validation, rate limit | Container: in-memory store + scripted model |
 | `agentUnits` | Deadline helper, memory conversion, state parsing, dev stub | Nothing |
+| `streaming` | SSE route, event order, safe tool summaries, partial-stream fallback, client disconnect, conversation read APIs, cross-user 404s | Container: in-memory store + scripted/streaming fake models |
+| `chatState` | UI reducer transitions, SSE parser | Nothing (pure functions) |
+| `ui` (jsdom) | Real React components: sign-in, streamed reply, proposal card, Confirm, Edit, Retry, 429, hypothetical styling, XSS-safe rendering | `fetch` (canned API/SSE responses) |
+| `session` | Secret policy (fails closed), token tampering, `alg=none` | Nothing |
+| `migration` | Committed init migration equals the schema (Prisma CLI, offline) | No database |
 
 Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38% retail, and excluding Bandra gives ₹17.7 Cr.
 
 **Not tested yet:**
 - Real model behaviour: tool-choice quality and answer faithfulness. This is the Phase 5 evaluation.
-- The Prisma store against a live Postgres.
+- The Prisma store, the migration and the seed against a live Postgres.
+- The UI in a real browser (it is covered by jsdom tests and an HTTP smoke test only) and with real streamed LLM output.
 
 ## Known limitations (so far)
 
 - No real authentication. The demo user picker with a signed cookie is the agreed scope.
 - In-memory data resets when the server restarts, and each serverless instance has its own copy. Use `DATA_BACKEND=prisma` for persistence.
 - The rate limit (20 messages per minute per user) is per server instance.
-- No streaming yet. The chat API returns the full reply when the turn finishes.
 - `costUsd` is not filled in yet. Token counts are recorded when the provider returns them.
-- The Prisma store has not yet been run against a live database.
+- The Prisma store, the init migration and the Postgres seed have not been run against a live database (see "Database").
+- The UI has been tested in jsdom and smoke-tested over HTTP, but not with a real LLM's streamed output.
 
 ## External dependencies
 

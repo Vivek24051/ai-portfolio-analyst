@@ -5,13 +5,14 @@
 ```mermaid
 flowchart LR
   subgraph Browser
-    Chat["/chat — WhatsApp-style UI<br/>(planned, Phase 3)"]
+    Chat["Chat UI (/) — WhatsApp-style<br/>reducer + SSE client"]
     Admin["/admin — ops dashboard<br/>(planned, Phase 4)"]
   end
 
   subgraph Next["Next.js app (Node runtime)"]
     Session["/api/session<br/>signed HTTP-only cookie"]
-    API["POST /api/chat<br/>strict body · cookie → userId<br/>rate limit"]
+    API["POST /api/chat/stream (SSE)<br/>POST /api/chat (JSON)<br/>strict body · cookie → userId · rate limit"]
+    Hist["GET /api/conversations[/:id]<br/>display-ready history"]
     Btn["POST /api/chat/actions<br/>Confirm/Cancel — no LLM"]
     Svc["chatService<br/>load history + state + portfolio<br/>turn deadline · persist · telemetry"]
     Graph["LangGraph<br/>agent ⇄ tools · max 5 rounds<br/>final no-tools call · limit node"]
@@ -27,6 +28,7 @@ flowchart LR
 
   Chat --> Session
   Chat --> API --> Svc --> Graph
+  Chat --> Hist --> Stores
   Chat --> Btn --> Actions
   Graph --> Router <--> LLM
   Graph --> Tools --> Domain
@@ -62,7 +64,8 @@ sequenceDiagram
   M-->>G: final answer
   S->>DB: append turn + state + attention flag (atomic)
   S->>DB: run telemetry (spans, LLM calls, tool calls)
-  S-->>U: reply, pendingAction card?, hypothetical?, telemetry
+  G-->>U: SSE: status · tool_start/tool_end · delta (streamed answer)
+  S-->>U: SSE done: reply, pendingAction card?, hypothetical?, toolActivity, telemetry
 ```
 
 ## Key invariants (enforced in code, covered by tests)

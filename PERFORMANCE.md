@@ -10,7 +10,8 @@
 | Each LLM call: model, ms, ok/error, fallback flag, tools bound, prompt/completion tokens | ✅ `AgentRun.timings.llmCalls` (tokens when the provider reports them) |
 | Each tool call: name, args, result, ok, error, ms | ✅ `ToolCall` rows |
 | Totals: `totalMs`, `llmMs`, `toolMs`, `llmCalls`, `toolCallCount`, tool rounds | ✅ `AgentRun` columns |
-| Time to first token / first visible token | ⏳ needs streaming (Phase 3) |
+| Time to first streamed token per LLM call (`ttftMs`), and whether the call streamed | ✅ in `AgentRun.timings.llmCalls` (null for non-streaming calls) |
+| Time to first visible event in the browser | ⏳ to be measured client-side in Phase 5 |
 | `costUsd` | ⏳ OpenRouter usage accounting (Phase 5) |
 
 ## What will be measured (per user turn)

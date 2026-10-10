@@ -13,6 +13,7 @@ import { runAgent } from "@/agent/graph";
 import { messageText, toLangChainMessages, toNewMessages } from "@/agent/memory";
 import { ModelUnavailableError, type ModelRouter } from "@/agent/model";
 import { createDeadline } from "@/agent/deadline";
+import { safeEmitter, summarizeToolOutcome, toolLabel, type EmitFn } from "@/agent/events";
 import { buildSystemPrompt } from "@/agent/prompt";
 import { RunRecorder } from "@/agent/telemetry";
 import { newTurnEvents, type ToolContext } from "@/agent/tools";
@@ -46,6 +47,8 @@ export interface ChatTurnResult {
   pendingAction: PendingActionView | null;
   hypothetical: boolean;
   handoff: boolean;
+  /** User-safe summary of tools used this turn (labels + outcomes, no raw args/results). */
+  toolActivity: ToolActivity[];
   needsAttention: boolean;
   telemetry: {
     totalMs: number;
@@ -92,6 +95,7 @@ async function resolveConversation(stores: Stores, userId: string, conversationI
 export async function handleChatTurn(
   deps: ChatDeps,
   input: { userId: string; conversationId?: string; message: string },
+  onEvent?: EmitFn,
 ): Promise<ChatTurnResult> {
   const now = (deps.now ?? (() => new Date()))();
   const recorder = new RunRecorder();
@@ -101,6 +105,8 @@ export async function handleChatTurn(
   const user = await stores.users.get(input.userId);
   if (!user) throw unauthorized();
   const conversation = await resolveConversation(stores, user.id, input.conversationId, now);
+  const emit = safeEmitter(onEvent);
+  emit({ type: "start", conversationId: conversation.id, runId });
 
   const { history, properties, state, pending } = await recorder.span("context_load", async () => {
     const [records, properties] = await Promise.all([
@@ -137,7 +143,7 @@ export async function handleChatTurn(
   const deadline = createDeadline(deps.turnDeadlineMs);
   try {
     const result = await recorder.span("agent", () =>
-      runAgent([...history, userMessage], { router: deps.router, toolCtx, recorder, systemPrompt, turnSignal: deadline.signal, usage }),
+      runAgent([...history, userMessage], { router: deps.router, toolCtx, recorder, systemPrompt, turnSignal: deadline.signal, usage, emit }),
     );
     toolRounds = result.toolRounds;
     const last = result.newMessages.at(-1);
@@ -211,6 +217,7 @@ export async function handleChatTurn(
     pendingAction: proposed && status === "ok" ? viewOf({ ...proposed, id: proposed.pendingActionId, type: proposed.action }) : null,
     hypothetical: toolCtx.events.hypothetical,
     handoff: toolCtx.events.handoff !== null,
+    toolActivity: toToolActivity(recorder),
     needsAttention: attention !== null,
     telemetry,
   };
@@ -316,7 +323,23 @@ export async function handlePendingActionDecision(
   });
   return {
     conversationId: conversation.id, runId, reply, status: "ok", pendingAction: null,
-    hypothetical: false, handoff: false, needsAttention: false, telemetry,
+    hypothetical: false, handoff: false, toolActivity: [], needsAttention: false, telemetry,
   };
 }
 
+
+export interface ToolActivity {
+  name: string;
+  label: string;
+  ok: boolean;
+  summary: string;
+}
+
+export function toToolActivity(recorder: RunRecorder): ToolActivity[] {
+  return recorder.toolCalls.map((t) => ({
+    name: t.name,
+    label: toolLabel(t.name),
+    ok: t.ok,
+    summary: summarizeToolOutcome(t.name, t.ok, t.result, t.error),
+  }));
+}

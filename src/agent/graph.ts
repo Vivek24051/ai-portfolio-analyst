@@ -12,6 +12,7 @@
 import { AIMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { Annotation, END, messagesStateReducer, START, StateGraph, type LangGraphRunnableConfig } from "@langchain/langgraph";
 import { MAX_TOOL_ROUNDS } from "./config";
+import { summarizeToolOutcome, toolLabel, type EmitFn } from "./events";
 import { invokeWithFallback, type ModelRouter } from "./model";
 import type { RunRecorder } from "./telemetry";
 import { executeToolRound, MALFORMED_ARGS_KEY, TOOL_SPECS, type ToolContext } from "./tools";
@@ -31,6 +32,8 @@ export interface AgentDeps {
   turnSignal: AbortSignal;
   /** Filled by the agent node: which model produced the final answer. */
   usage: { modelId: string | null; usedFallback: boolean };
+  /** Progress events for the client (already wrapped so it can never throw). */
+  emit: EmitFn;
 }
 
 export const TOOL_LIMIT_REPLY =
@@ -68,23 +71,43 @@ async function agentNode(state: State, config: LangGraphRunnableConfig): Promise
   const d = deps(config);
   const budgetLeft = state.toolRounds < MAX_TOOL_ROUNDS;
   const system = new SystemMessage(d.systemPrompt + (budgetLeft ? "" : BUDGET_EXHAUSTED_NOTE));
+  d.emit({ type: "status", label: state.toolRounds === 0 ? "Thinking…" : "Putting the answer together…" });
+  let streamedText = false;
   const { message, modelId, usedFallback } = await invokeWithFallback(
     d.router,
     [system, ...state.messages],
-    { tools: budgetLeft ? TOOL_SPECS : null, turnSignal: d.turnSignal },
+    {
+      tools: budgetLeft ? TOOL_SPECS : null,
+      turnSignal: d.turnSignal,
+      stream: {
+        onDelta: (text) => {
+          streamedText = true;
+          d.emit({ type: "delta", text });
+        },
+        onReset: () => {
+          streamedText = false;
+          d.emit({ type: "reset" });
+        },
+      },
+    },
     d.recorder,
   );
   d.usage.modelId = modelId;
   d.usage.usedFallback ||= usedFallback;
-  return { messages: [normaliseToolCalls(message)] };
+  const normalised = normaliseToolCalls(message);
+  // Text streamed alongside tool calls is a preamble ("let me check…"), not the answer.
+  if (streamedText && (normalised.tool_calls?.length ?? 0) > 0) d.emit({ type: "reset" });
+  return { messages: [normalised] };
 }
 
 async function toolsNode(state: State, config: LangGraphRunnableConfig): Promise<Partial<State>> {
   const d = deps(config);
   const last = state.messages.at(-1) as AIMessage;
   const calls = (last.tool_calls ?? []).map((c, i) => ({ id: c.id ?? `call_${i}`, name: c.name, args: c.args }));
+  for (const c of calls) d.emit({ type: "tool_start", callId: c.id, name: c.name, label: toolLabel(c.name) });
   const outcomes = await executeToolRound(d.toolCtx, calls);
   for (const o of outcomes) {
+    d.emit({ type: "tool_end", callId: o.callId, name: o.name, ok: o.ok, summary: summarizeToolOutcome(o.name, o.ok, o.result, o.error) });
     d.recorder.toolCalls.push({
       name: o.name,
       args: calls.find((c) => c.id === o.callId)?.args ?? null,

@@ -133,3 +133,45 @@ With no API key and no `DATABASE_URL`, the app still runs end to end: real graph
 
 ## D25. The Confirm button skips the LLM
 `POST /api/chat/actions` confirms or cancels a pending action deterministically, with no model call. It is faster and cheaper, and prompt injection cannot affect it. The LLM path (the user typing "yes") is still supported, with the same-turn and affirmation checks from D11.
+
+---
+## Phase 3: chat UI, streaming, dataset, migrations
+
+## D26. Synthetic CSVs committed to `data/seed/`, PDF excluded
+A fresh clone, and the evaluators, can run the tests and the app without any manual setup. The files are byte-identical copies, verified by checksum and by a fresh-clone test run. The assignment PDF and the root-level originals stay git-ignored. `outputFileTracingIncludes` ships `data/seed` with serverless deployments, because the in-memory backend reads the files at runtime.
+
+## D27. Initial migration generated offline, with a drift test
+`prisma migrate dev` needs a live database. Instead, `prisma migrate diff --from-empty` produced the init SQL, and `tests/migration.test.ts` fails if `schema.prisma` and the committed migration ever diverge. **Still unverified:** applying the migration to a real Postgres.
+
+## D28. The session secret fails closed
+The dev fallback secret is accepted only when `NODE_ENV` is explicitly `development` or `test`. Every other case throws, including an unset `NODE_ENV` and production. A secret shorter than 32 characters, or equal to the published dev value, is rejected everywhere.
+
+## D29. SSE over `fetch`, not WebSockets or EventSource
+- One request per turn with a one-way stream fits the problem exactly.
+- It works through Vercel's serverless functions.
+- It needs no extra infrastructure.
+
+`EventSource` can't send a POST body, so the client reads the `fetch` body and parses the frames itself. Every check that can fail (auth, validation, rate limit, ownership) runs before the stream opens, so those failures stay ordinary HTTP status codes.
+
+**Trade-off:** no server push outside a turn, which isn't needed here.
+
+## D30. Stream protocol exposes progress, not internals
+Events are `start`, `status`, `tool_start` / `tool_end` (a friendly label plus a one-line outcome such as "3 matches"), `delta`, `reset`, `done`, and `error`. Raw tool arguments and results, prompts, and error internals never leave the server; a test asserts that raw payload fields are absent from the stream.
+
+`reset` handles two cases:
+- a model that writes "let me check…" and then calls tools
+- a primary model that fails mid-stream before the fallback answers
+
+Either way the user never sees two half-answers spliced together.
+
+## D31. Client disconnects don't cancel the turn
+If the browser goes away mid-stream, the turn still finishes, is saved, and is recorded as a run. The emitter swallows write failures. This avoids "half-saved" states, for example a confirmation that was applied but whose reply was never saved.
+
+## D32. UI state as a pure reducer; the server owns all logic
+`chatReducer` is a pure function of `(state, action)`, so streaming, retry, and proposal transitions are unit-tested without a browser. The UI never computes figures or decides on writes:
+- the proposal card renders the server's diff
+- Confirm calls the server's LLM-free endpoint
+- "hypothetical" is a server flag, recomputed from stored tool results when history is reloaded
+
+## D33. Safe rendering of model text
+Model output is rendered as React text nodes with a tiny formatter (paragraphs, bullet lists, bold), never as HTML. A test injects `<script>` and `<img onerror>` and asserts that no element is created.
