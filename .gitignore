@@ -11,7 +11,7 @@ next-env.d.ts
 !.env.example
 
 # eval run outputs can be regenerated; summaries are committed under docs/
-eval/results/*.jsonl
+eval/results/
 
 .vercel
 .DS_Store

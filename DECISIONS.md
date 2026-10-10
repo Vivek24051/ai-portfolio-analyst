@@ -229,3 +229,45 @@ Now the first primary failure sends the rest of that turn straight to the fallba
 - Admin trace previews of tool arguments and results are redacted and capped at 1,500 characters.
 
 A bug in the first version of the redactor (it treated the match offset as a captured group, which leaked a connection string) was caught by a test and fixed.
+
+---
+## Phase 5: evaluation and performance (zero-cost stage)
+
+## D42. A deterministic golden set, with no LLM-as-judge
+There are 40 cases and 50 turns. Every check is a rule over observable outcomes: tool calls from the run record, the reply text, the staged proposal, flags, and the store compared with the seed. Expected figures are hand-derived literals, so the oracle can't pass by agreeing with the code under test.
+
+**Trade-off:** the rules can't judge tone or helpfulness. Those remain a manual review item, which matches the timebox and avoids paying for a second model to grade the first.
+
+## D43. Positive and negative controls validate the graders
+A grader that never fails is worthless, so each metric is shown to move:
+- **Oracle reference policy** must pass 40/40, which shows the tools, numbers, flags, and expectations are right.
+- **Perturbed oracle** (falsified figures) must fail numeric faithfulness while tool and argument scores stay at 100%, which shows the metrics are independent.
+- **Dev stub** must fail the behavioural checks: 0% on clarification and on hypothetical labelling.
+
+The oracle and perturbed runs are part of `npm test`.
+
+## D44. Numeric faithfulness is enforced in production, not only in evaluation
+`checkNumericFaithfulness` extracts ₹ (Cr/L/crore/lakh), %, percentage points, and plain numbers from each reply. Each one must match a number in this turn's or earlier turns' tool output, in the user's own words, or in a data label such as "Sector 29". Money may differ by up to 0.5% and percentages by up to 0.05 points, to allow normal rounding. Anything else flags the conversation as `unsupported_numbers`, and the result is recorded on the run and shown in the admin trace.
+
+It is a detector, not a blocker. A false positive costs a human review, while blocking a correct answer would hurt users.
+
+## D45. The OpenRouter integration is verified with an injected `fetch` and synthetic payloads
+No paid calls were made. The real `ChatOpenAI` client runs against a fake `fetch` that returns OpenRouter-format JSON and SSE. This verified:
+- the request shape: model, tools, `temperature: 0`, `parallel_tool_calls`, `usage.include`, `stream_options.include_usage`, the bearer key;
+- parsing of tool calls, including arguments split across stream chunks;
+- malformed arguments → `invalid_tool_calls`;
+- usage and **cost location** (`response_metadata.usage.cost`, streamed and not);
+- exactly one HTTP attempt per failure;
+- redaction of secrets echoed in error bodies;
+- fallback on 429/5xx, network errors, and garbage bodies;
+- that a hung connection is actually aborted (the `fetch` signal fires).
+
+**Not proven:** live provider behaviour.
+
+## D46. No fallback on 401/402
+An invalid key or exhausted credits fail identically on the fallback model, because it's the same key and the same account. Retrying would add a wasted round trip and could mislead the error log, so the turn ends with a clear error instead.
+
+## D47. Benchmarks keep their conditions attached
+In-process (mock model), HTTP (local `next start`, dev stub), and eval-runner timings are reported separately, each with machine, workload, and conditions. Eval-runner "model" time includes the token-estimation wrapper and is not used as a latency figure.
+
+Token counts for planning use cl100k and are labelled as estimates; they are never stored as usage. Two operational knobs were added for benchmarking: `CHAT_RATE_LIMIT_PER_MIN` and `DEV_STUB_STREAM_DELAY_MS`.

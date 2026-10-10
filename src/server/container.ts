@@ -48,7 +48,16 @@ function createRouter(config: AgentConfig): { router: ModelRouter; modelMode: Co
       },
     };
   }
-  return { modelMode: "dev-stub", router: { primary: createDevStubModel(), fallback: null, callTimeoutMs: config.llmCallTimeoutMs } };
+  // DEV_STUB_STREAM_DELAY_MS: artificial per-word delay for demos (default 12); 0 for benchmarks.
+  const delay = Number(process.env.DEV_STUB_STREAM_DELAY_MS);
+  const stub = createDevStubModel(Number.isFinite(delay) && delay >= 0 ? { streamDelayMs: delay } : {});
+  return { modelMode: "dev-stub", router: { primary: stub, fallback: null, callTimeoutMs: config.llmCallTimeoutMs } };
+}
+
+/** Messages per user per minute (CHAT_RATE_LIMIT_PER_MIN, default 20). */
+function chatRateLimit(): number {
+  const n = Number(process.env.CHAT_RATE_LIMIT_PER_MIN);
+  return Number.isInteger(n) && n > 0 ? n : 20;
 }
 
 export function getContainer(): Promise<Container> {
@@ -59,7 +68,7 @@ export function getContainer(): Promise<Container> {
     const { router, modelMode } = createRouter(config);
     const stores = await createStores(dataBackend);
     console.info(`[container] data=${dataBackend} model=${modelMode}${modelMode === "openrouter" ? ` (${config.primaryModel})` : ""}`);
-    return { stores, router, config, modelMode, dataBackend, chatLimiter: new RateLimiter(20, 60_000) };
+    return { stores, router, config, modelMode, dataBackend, chatLimiter: new RateLimiter(chatRateLimit(), 60_000) };
   })().catch((e) => {
     g.__container = undefined; // allow a retry instead of caching the failure
     throw e;

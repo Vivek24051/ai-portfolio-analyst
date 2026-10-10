@@ -18,7 +18,14 @@
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:dry": "tsx prisma/seed.ts --dry-run",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test:coverage": "vitest run --coverage",
+    "eval": "tsx eval/run.ts",
+    "eval:oracle": "tsx eval/run.ts --mode oracle",
+    "eval:stub": "tsx eval/run.ts --mode dev-stub",
+    "bench": "tsx eval/bench.ts",
+    "bench:http": "tsx eval/httpBench.ts",
+    "eval:perturbed": "tsx eval/run.ts --mode perturbed"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -43,6 +50,8 @@
     "@types/node": "20.19.43",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "js-tiktoken": "1.0.21",
     "jsdom": "26.1.0",
     "prisma": "6.19.3",
     "tsx": "4.23.15",

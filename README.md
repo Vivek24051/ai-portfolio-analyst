@@ -11,7 +11,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 > | 2 | Agent, tools, memory, chat API | ✅ (tested with mocked models) |
 > | 3 | Chat UI + streaming | ✅ (UI tested in jsdom; not yet with a real LLM) |
 > | 4 | Admin dashboard + observability | ✅ (in-memory store, dev stub and scripted models only) |
-> | 5 | Evaluation and performance | ⏳ |
+> | 5 | Evaluation and performance | ✅ zero-cost stage (mocked models) · ⏸ paid model evaluation awaiting approval |
 > | 6 | Docs and deploy prep | ⏳ |
 >
 > Sections marked _(planned)_ describe work that is not built yet. **No real LLM has been called yet.** The agent has been exercised only with scripted test models and the dev stub.
@@ -22,7 +22,8 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 |---|---|
 | [SOUL.md](SOUL.md) | The agent's role, voice, boundaries, and when it asks questions or hands off to a human |
 | [DECISIONS.md](DECISIONS.md) | Decision log: engineering choices and trade-offs |
-| [PERFORMANCE.md](PERFORMANCE.md) | Latency methodology and measured results |
+| [PERFORMANCE.md](PERFORMANCE.md) | Methodology, measured results, evaluation scores, paid-run plan, scaling |
+| [docs/eval/](docs/eval/) | Generated evaluation and benchmark reports |
 | [docs/architecture.md](docs/architecture.md) | End-to-end architecture diagram |
 
 ## Stack
@@ -77,6 +78,7 @@ src/
   components/        ChatApp, MessageBubble, PendingActionCard, Composer, UserPicker
   lib/               chatState (pure reducer), chatClient (fetch + SSE), sse, richText (safe rendering)
 prisma/                schema.prisma, seed.ts, migrations/ (init migration, generated offline)
+eval/                  Golden set (40 cases), oracle/perturbed controls, graders, runner, benchmarks
 tests/                 Vitest suites
 ```
 
@@ -203,6 +205,25 @@ An operations view for the business team. It is for observing and controlling th
 - With the dev stub and in-memory data (the defaults), a banner on every admin page says that timings are **not** representative of a real LLM and that data is **not** persisted in PostgreSQL.
 - A metric the provider didn't report is shown as **—** ("not reported"), never as 0.
 
+## Evaluation and benchmarks
+
+All of these run locally at zero cost. None of them calls an LLM.
+
+```bash
+npm run eval:oracle      # positive control: reference policy must pass 40/40 with 0 safety violations
+npm run eval:perturbed   # negative control: falsified figures must be caught by numeric faithfulness
+npm run eval:stub        # negative control: the keyword stub must be caught by the behavioural graders
+npm run bench            # in-process pipeline overhead (mock model), writes docs/eval/bench-inprocess.md
+npm run bench:http       # against a running server (see eval/httpBench.ts for the exact commands)
+npm run test:coverage    # unit/integration coverage
+```
+
+The oracle and perturbed controls also run inside `npm test` (`tests/eval.test.ts`), so any regression in tools, numbers, or graders fails CI.
+
+**Paid mode** (`--mode openrouter`) refuses to start unless `EVAL_ALLOW_PAID=1`, `--confirm-paid`, `--max-calls`, and `--max-cost-usd` are all set. It has not been run. The plan and budget are in [PERFORMANCE.md §5](PERFORMANCE.md).
+
+**Production check on every turn:** each reply is scanned for figures, and any ₹, % or count that isn't in tool output (or in the user's own message) flags the conversation as `unsupported_numbers`.
+
 ## How a chat turn works
 
 1. `POST /api/chat/stream` (used by the UI) or `POST /api/chat` (JSON) takes `{message, conversationId?}`.
@@ -257,12 +278,16 @@ All of these are recorded in [DECISIONS.md](DECISIONS.md).
 | `migration` | Committed init migration equals the schema (Prisma CLI, offline) | No database |
 | `admin` | Admin auth (fails closed, lockout, CSRF), proxy, admin APIs, cross-auth isolation, overview, attention flags and resolution, execution traces, redaction in traces | In-memory store + scripted models |
 | `adminPages` | Server-rendered admin pages: page-level auth, content, escaping, "—" for unreported metrics | Mocked request headers + in-memory store |
+| `faithfulness` | Number extraction (₹ Cr/L/crore/lakh, %, pp, plain) and support matching | Nothing |
+| `eval` | Golden set as a regression gate: oracle passes 40/40, perturbed control is caught; grader and spend-guard unit tests | Oracle / perturbed mock models |
+| `openrouter` | **Real** LangChain/OpenAI client with an injected fetch replaying synthetic OpenRouter payloads: request shape, tool-call parsing (incl. streamed fragments), usage and cost, 401/402/429/5xx, hung connections, garbage bodies, an end-to-end turn | Network (synthetic payloads) |
 | `observability` | Token/cost aggregation (missing ≠ zero), cost extraction, redaction, per-turn fallback circuit breaker | Scripted models; cost metadata shapes are assumed |
 
 Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38% retail, and excluding Bandra gives ₹17.7 Cr.
 
 **Not tested yet:**
-- Real model behaviour: tool-choice quality and answer faithfulness. This is the Phase 5 evaluation.
+- Real model behaviour: tool-choice quality, answer faithfulness, latency, tokens, and cost. The harness is ready; the paid run awaits approval (PERFORMANCE.md §5).
+- Live OpenRouter responses. The integration is verified only against synthetic payloads in OpenRouter's documented format.
 - The Prisma store, the migration and the seed against a live Postgres. This includes the admin queries (`AdminStore` over Prisma): the admin tests run on the in-memory store, which does **not** demonstrate PostgreSQL persistence.
 - The UI in a real browser (it is covered by jsdom tests and an HTTP smoke test only) and with real streamed LLM output.
 
