@@ -20,6 +20,9 @@ import type {
   PendingActionRecord,
   StoredToolCall,
   Stores,
+  ToolCallRecord,
+  AgentRunRecord,
+  RunWithToolCalls,
 } from "./types";
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -89,6 +92,8 @@ function mapConversation(c: DbConversation): ConversationRecord {
     state: c.state,
     needsAttention: c.needsAttention,
     attentionReason: c.attentionReason,
+    attentionResolvedAt: c.attentionResolvedAt,
+    attentionResolvedBy: c.attentionResolvedBy,
     createdAt: c.createdAt,
     lastMessageAt: c.lastMessageAt,
   };
@@ -235,7 +240,9 @@ function storesFor(db: Db, root: PrismaClient | null): Stores {
             data: {
               state: json(turn.state),
               lastMessageAt: turn.now,
-              ...(turn.attentionReason ? { needsAttention: true, attentionReason: turn.attentionReason } : {}),
+              ...(turn.attentionReason
+                ? { needsAttention: true, attentionReason: turn.attentionReason, attentionResolvedAt: null, attentionResolvedBy: null }
+                : {}),
             },
           });
           if (count === 0) throw new Error(`Conversation ${conversationId} not found for user`);
@@ -266,7 +273,8 @@ function storesFor(db: Db, root: PrismaClient | null): Stores {
             ...run,
             timings: run.timings === null ? undefined : json(run.timings),
             toolCalls: {
-              create: toolCalls.map((t) => ({
+              create: toolCalls.map((t, position) => ({
+                position,
                 name: t.name,
                 args: json(t.args ?? {}),
                 result: t.result === undefined ? undefined : json(t.result),
@@ -279,6 +287,46 @@ function storesFor(db: Db, root: PrismaClient | null): Stores {
         });
       },
     },
+    admin: {
+      async listConversations({ userId, needsAttention, limit }) {
+        const rows = await db.conversation.findMany({
+          where: { ...(userId ? { userId } : {}), ...(needsAttention === undefined ? {} : { needsAttention }) },
+          orderBy: [{ needsAttention: "desc" }, { lastMessageAt: "desc" }],
+          take: limit,
+        });
+        return rows.map(mapConversation);
+      },
+      async getConversation(conversationId) {
+        const c = await db.conversation.findUnique({ where: { id: conversationId } });
+        return c ? mapConversation(c) : null;
+      },
+      async listMessages(conversationId, limit) {
+        const rows = await db.message.findMany({ where: { conversationId }, orderBy: { seq: "desc" }, take: limit });
+        return rows.reverse().map(mapMessage);
+      },
+      async listRuns({ conversationId, limit }) {
+        const rows = await db.agentRun.findMany({
+          where: conversationId ? { conversationId } : {},
+          orderBy: { startedAt: "desc" },
+          take: limit,
+          include: { toolCalls: { orderBy: { position: "asc" } } },
+        });
+        return rows.map(mapRun);
+      },
+      async countMessages(conversationIds) {
+        const groups = await db.message.groupBy({ by: ["conversationId"], where: { conversationId: { in: conversationIds } }, _count: { _all: true } });
+        const counts: Record<string, number> = Object.fromEntries(conversationIds.map((id) => [id, 0]));
+        for (const g of groups) counts[g.conversationId] = g._count._all;
+        return counts;
+      },
+      async resolveAttention(conversationId, by, at) {
+        const { count } = await db.conversation.updateMany({
+          where: { id: conversationId, needsAttention: true },
+          data: { needsAttention: false, attentionResolvedAt: at, attentionResolvedBy: by },
+        });
+        return count === 1;
+      },
+    },
     async transaction(fn) {
       if (!root) return fn(stores); // already inside a transaction
       return root.$transaction((tx) => fn(storesFor(tx, null)));
@@ -289,4 +337,37 @@ function storesFor(db: Db, root: PrismaClient | null): Stores {
 
 export function createPrismaStores(prisma: PrismaClient): Stores {
   return storesFor(prisma, prisma);
+}
+
+type DbRunWithCalls = Prisma.AgentRunGetPayload<{ include: { toolCalls: true } }>;
+
+function mapRun(r: DbRunWithCalls): RunWithToolCalls {
+  const run: AgentRunRecord = {
+    id: r.id,
+    conversationId: r.conversationId,
+    userId: r.userId,
+    status: r.status,
+    model: r.model,
+    fallbackUsed: r.fallbackUsed,
+    totalMs: r.totalMs ?? 0,
+    llmMs: r.llmMs ?? 0,
+    toolMs: r.toolMs ?? 0,
+    llmCalls: r.llmCalls,
+    toolCallCount: r.toolCallCount,
+    promptTokens: r.promptTokens,
+    completionTokens: r.completionTokens,
+    costUsd: r.costUsd,
+    error: r.error,
+    timings: r.timings,
+    startedAt: r.startedAt,
+  };
+  const toolCalls: ToolCallRecord[] = r.toolCalls.map((t) => ({
+    name: t.name,
+    args: t.args,
+    result: t.result,
+    ok: t.ok,
+    error: t.error,
+    durationMs: t.durationMs,
+  }));
+  return { run, toolCalls };
 }

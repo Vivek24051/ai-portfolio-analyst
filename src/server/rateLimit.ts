@@ -10,6 +10,12 @@ export class RateLimiter {
     private readonly windowMs: number,
   ) {}
 
+  /** True if the key has used up its allowance in the current window (does not count a hit). */
+  blocked(key: string, nowMs = Date.now()): boolean {
+    const h = this.hits.get(key);
+    return !!h && nowMs - h.windowStart < this.windowMs && h.count >= this.limit;
+  }
+
   /** Returns true if allowed (and counts the hit). */
   take(key: string, nowMs = Date.now()): boolean {
     const h = this.hits.get(key);

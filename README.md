@@ -10,7 +10,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 > | 1 | Domain core and tests | ✅ |
 > | 2 | Agent, tools, memory, chat API | ✅ (tested with mocked models) |
 > | 3 | Chat UI + streaming | ✅ (UI tested in jsdom; not yet with a real LLM) |
-> | 4 | Admin and observability | ⏳ |
+> | 4 | Admin dashboard + observability | ✅ (in-memory store, dev stub and scripted models only) |
 > | 5 | Evaluation and performance | ⏳ |
 > | 6 | Docs and deploy prep | ⏳ |
 >
@@ -63,6 +63,8 @@ src/
     stores/            Persistence interfaces; Prisma and in-memory implementations, all user-scoped
     session.ts         Signed HTTP-only demo-user cookie (jose, HS256)
     container.ts       Picks the data backend and the model from env
+    admin/            auth (Basic, fail-closed, lockout, CSRF), adminService (overview, lists, traces), page guard
+    redact.ts          Secret redaction for logs and stored errors
   app/api/
     chat/route.ts               POST: one turn (JSON)
     chat/stream/route.ts        POST: one turn as Server-Sent Events
@@ -70,6 +72,8 @@ src/
     conversations/route.ts      GET: the user's conversations
     conversations/[id]/route.ts GET: display-ready transcript + open proposal
     session/route.ts            GET/POST/DELETE: demo-user picker
+  admin/             Server-rendered ops dashboard: overview, conversations, execution traces
+  proxy.ts           Basic-auth challenge + no-store for /admin and /api/admin (pages/APIs re-check)
   components/        ChatApp, MessageBubble, PendingActionCard, Composer, UserPicker
   lib/               chatState (pure reducer), chatClient (fetch + SSE), sse, richText (safe rendering)
 prisma/                schema.prisma, seed.ts, migrations/ (init migration, generated offline)
@@ -85,10 +89,28 @@ npm install
 # The synthetic CSVs are committed in data/seed/ (see "Dataset files")
 npm test                 # all suites; models and persistence are mocked
 npm run build            # production build; needs no env vars
-npm run dev              # http://localhost:3000; in-memory data + dev stub model
 ```
 
-Optional, to use a real model: copy `.env.example` to `.env` and set `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL` (and optionally `LLM_FALLBACK_MODEL`). OpenRouter usage is paid.
+### Run it locally (chat + admin)
+
+1. Create a file named `.env.local` in the project root. It is git-ignored; Next.js loads it in both `dev` and `start`. Put this in it:
+   ```
+   ADMIN_USERNAME=admin
+   ADMIN_PASSWORD=choose-a-password-of-12+-chars
+   ```
+2. Start the dev server: `npm run dev`
+3. Open the **chat** at http://localhost:3000 and pick a demo client.
+4. Open the **admin dashboard** at http://localhost:3000/admin. The browser asks for the username and password from `.env.local`.
+
+Without `ADMIN_PASSWORD` (or with one shorter than 12 characters), `/admin` returns **503** by design.
+
+To run the production build locally, also add `SESSION_SECRET` to `.env.local`. Production mode refuses to sign sessions without it. Generate one with:
+`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+Then run `npm run build`, then `npm start`.
+
+No key is needed for any of this: without `OPENROUTER_API_KEY` the app uses the labelled dev stub, and data is in memory.
+
+Optional, to use a real model: set `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL` (and optionally `LLM_FALLBACK_MODEL`). OpenRouter usage is paid.
 
 ### Database (optional)
 
@@ -140,6 +162,46 @@ The assignment PDF and the original root-level copies are deliberately not commi
 - **Errors.** Network failures, rate limits, and model outages show an inline error with **Retry**. A message that never reached the server is re-sent rather than duplicated.
 - **Demo mode banner.** Shown when no LLM is configured (dev stub) and when data is in memory.
 - **Rendering.** Model text is rendered without `dangerouslySetInnerHTML`; only bold and simple lists are formatted.
+
+## Admin dashboard (`/admin`)
+
+An operations view for the business team. It is for observing and controlling the agent; it is not a CRM.
+
+| Page | Shows |
+|---|---|
+| `/admin` (overview) | **Needs attention** queue with the reason for each flag; run metrics from recorded runs (count, errors, fallbacks, p50/p95 server latency, how many runs had provider-reported tokens and cost); users with conversation and flag counts |
+| `/admin/conversations` | All conversations across users, filterable by user and "needs attention", with message, run and error counts and the last run's status |
+| `/admin/conversations/:id` | Attention panel with **Mark as resolved** (keeps the reason and records who resolved it and when; a later failure re-flags the conversation); backend state (focus properties, active scenario, open proposals); the full transcript including tool calls and results; the **execution trace** of every run |
+
+**What a run's execution trace shows:**
+- **Status and error.** The error text is redacted.
+- **Where the time went:** request (auth and validation), context load, agent, persist.
+- **Each model call:** model, fallback flag, ok or error, duration, time to first token, tokens in and out, cost.
+- **Each tool call:** outcome, duration, and redacted, size-capped previews of the arguments and result.
+
+**Conversations are flagged automatically when:**
+- the agent hands off to a human (`flag_for_human`);
+- the model is unavailable or the turn deadline passes;
+- an unexpected internal error occurs;
+- the tool-round limit is hit;
+- two or more tool calls fail in one turn.
+
+**Security:**
+- **Basic auth on every admin page and API handler.** Each one checks HTTP Basic auth itself, so the proxy (`src/proxy.ts`) is a convenience that triggers the browser's login prompt, not the security boundary.
+- **Fails closed** (503) without a strong `ADMIN_PASSWORD`, in every environment.
+- **Constant-time** credential comparison.
+- **Lockout:** after 10 failed attempts per client in 5 minutes, logins are refused, including correct ones.
+- **Same-origin check** on the state-changing resolve action, as CSRF protection.
+- **No caching or indexing:** responses are `no-store` and `noindex`.
+- **Separate credentials:** admin credentials don't grant chat access, and a chat session cookie doesn't grant admin access.
+- **No secrets in the browser:** credentials never reach it, and the built client bundle was checked for admin or auth code.
+
+**JSON API** for scripts (Basic auth): `GET /api/admin/overview`, `GET /api/admin/conversations?user=U001&attention=1`, `GET /api/admin/conversations/:id`.
+
+**About the numbers shown:**
+- Metrics come only from runs actually recorded in the configured store.
+- With the dev stub and in-memory data (the defaults), a banner on every admin page says that timings are **not** representative of a real LLM and that data is **not** persisted in PostgreSQL.
+- A metric the provider didn't report is shown as **—** ("not reported"), never as 0.
 
 ## How a chat turn works
 
@@ -193,12 +255,15 @@ All of these are recorded in [DECISIONS.md](DECISIONS.md).
 | `ui` (jsdom) | Real React components: sign-in, streamed reply, proposal card, Confirm, Edit, Retry, 429, hypothetical styling, XSS-safe rendering | `fetch` (canned API/SSE responses) |
 | `session` | Secret policy (fails closed), token tampering, `alg=none` | Nothing |
 | `migration` | Committed init migration equals the schema (Prisma CLI, offline) | No database |
+| `admin` | Admin auth (fails closed, lockout, CSRF), proxy, admin APIs, cross-auth isolation, overview, attention flags and resolution, execution traces, redaction in traces | In-memory store + scripted models |
+| `adminPages` | Server-rendered admin pages: page-level auth, content, escaping, "—" for unreported metrics | Mocked request headers + in-memory store |
+| `observability` | Token/cost aggregation (missing ≠ zero), cost extraction, redaction, per-turn fallback circuit breaker | Scripted models; cost metadata shapes are assumed |
 
 Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38% retail, and excluding Bandra gives ₹17.7 Cr.
 
 **Not tested yet:**
 - Real model behaviour: tool-choice quality and answer faithfulness. This is the Phase 5 evaluation.
-- The Prisma store, the migration and the seed against a live Postgres.
+- The Prisma store, the migration and the seed against a live Postgres. This includes the admin queries (`AdminStore` over Prisma): the admin tests run on the in-memory store, which does **not** demonstrate PostgreSQL persistence.
 - The UI in a real browser (it is covered by jsdom tests and an HTTP smoke test only) and with real streamed LLM output.
 
 ## Known limitations (so far)
@@ -209,6 +274,8 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 - `costUsd` is not filled in yet. Token counts are recorded when the provider returns them.
 - The Prisma store, the init migration and the Postgres seed have not been run against a live database (see "Database").
 - The UI has been tested in jsdom and smoke-tested over HTTP, but not with a real LLM's streamed output.
+- Admin auth is single-account HTTP Basic auth: there is no logout (close the browser), no roles, and the lockout counter is per server instance.
+- Token usage and cost are recorded only if the provider reports them; extracting OpenRouter's cost field is an untested assumption.
 
 ## External dependencies
 

@@ -2,7 +2,7 @@
 
 > **No latency measurements yet.** The instrumentation is built (Phase 2), but no real model has been called. Test timings with mocked models are not representative and are deliberately not reported. The tables below will be filled only from real runs of the evaluation harness (Phase 5).
 
-## Instrumentation status (Phase 2)
+## Instrumentation status
 
 | Signal | Status |
 |---|---|
@@ -12,7 +12,10 @@
 | Totals: `totalMs`, `llmMs`, `toolMs`, `llmCalls`, `toolCallCount`, tool rounds | ✅ `AgentRun` columns |
 | Time to first streamed token per LLM call (`ttftMs`), and whether the call streamed | ✅ in `AgentRun.timings.llmCalls` (null for non-streaming calls) |
 | Time to first visible event in the browser | ⏳ to be measured client-side in Phase 5 |
-| `costUsd` | ⏳ OpenRouter usage accounting (Phase 5) |
+| Request receipt → `request_validation` span (auth, body, rate limit) | ✅ |
+| `costUsd` per call and per run | ✅ recorded **only if the provider reports it** (OpenRouter `usage.include` requested; extraction path unverified live). Run total is null unless every successful call reported it |
+| Prompt/completion tokens per run | ✅ same rule: null = not reported, 0 = reported zero |
+| Where to see it | `/admin` (p50/p95 over recorded runs) and `/admin/conversations/:id` (per-run trace) |
 
 ## What will be measured (per user turn)
 

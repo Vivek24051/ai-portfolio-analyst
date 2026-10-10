@@ -112,6 +112,8 @@ export function createMemoryStores(seed: { users: UserProfile[]; properties: Pro
           state: {},
           needsAttention: false,
           attentionReason: null,
+          attentionResolvedAt: null,
+          attentionResolvedBy: null,
           createdAt: now,
           lastMessageAt: now,
         };
@@ -144,12 +146,50 @@ export function createMemoryStores(seed: { users: UserProfile[]; properties: Pro
         if (turn.attentionReason) {
           c.needsAttention = true;
           c.attentionReason = turn.attentionReason;
+          c.attentionResolvedAt = null;
+          c.attentionResolvedBy = null;
         }
       },
     },
     runs: {
       async record(run, toolCalls) {
         state.runs.push(clone({ run, toolCalls }));
+      },
+    },
+    admin: {
+      async listConversations({ userId, needsAttention, limit }) {
+        return clone(
+          state.conversations
+            .filter((c) => (userId === undefined || c.userId === userId) && (needsAttention === undefined || c.needsAttention === needsAttention))
+            .sort((a, b) => Number(b.needsAttention) - Number(a.needsAttention) || b.lastMessageAt.getTime() - a.lastMessageAt.getTime())
+            .slice(0, limit),
+        );
+      },
+      async getConversation(conversationId) {
+        return clone(state.conversations.find((c) => c.id === conversationId) ?? null);
+      },
+      async listMessages(conversationId, limit) {
+        return clone(state.messages.filter((m) => m.conversationId === conversationId).slice(-limit));
+      },
+      async listRuns({ conversationId, limit }) {
+        return clone(
+          state.runs
+            .filter((r) => conversationId === undefined || r.run.conversationId === conversationId)
+            .slice()
+            .reverse()
+            .slice(0, limit),
+        );
+      },
+      async countMessages(conversationIds) {
+        return Object.fromEntries(conversationIds.map((id) => [id, state.messages.filter((m) => m.conversationId === id).length]));
+      },
+      async resolveAttention(conversationId, by, at) {
+        const c = state.conversations.find((x) => x.id === conversationId);
+        if (!c || !c.needsAttention) return false;
+        c.needsAttention = false;
+        c.attentionResolvedAt = at;
+        c.attentionResolvedBy = by;
+        return true;
       },
     },
     async transaction(fn) {

@@ -98,6 +98,8 @@ export interface ConversationRecord {
   state: unknown;
   needsAttention: boolean;
   attentionReason: string | null;
+  attentionResolvedAt: Date | null;
+  attentionResolvedBy: string | null;
   createdAt: Date;
   lastMessageAt: Date;
 }
@@ -110,7 +112,7 @@ export interface ConversationStore {
   recentMessages(userId: string, conversationId: string, limit: number): Promise<MessageRecord[]>;
   /**
    * Atomically appends a turn's messages and saves the new state. `attentionReason` sets the
-   * needs-attention flag; it is never cleared automatically (a human clears it).
+   * needs-attention flag (and clears any earlier resolution); only an administrator clears it.
    */
   appendTurn(
     userId: string,
@@ -160,6 +162,31 @@ export interface Stores {
   pendingActions: PendingActionStore;
   conversations: ConversationStore;
   runs: RunStore;
+  admin: AdminStore;
   /** Runs fn atomically (DB transaction for Prisma; sequential for in-memory). */
   transaction<T>(fn: (tx: Stores) => Promise<T>): Promise<T>;
+}
+
+// ---------- Admin (cross-user, read-mostly) ----------
+
+export interface RunWithToolCalls {
+  run: AgentRunRecord;
+  toolCalls: ToolCallRecord[];
+}
+
+/**
+ * The ONLY cross-user access path. Used exclusively by admin-authenticated routes/pages
+ * (src/server/admin/*); chat code must never import it. Every other port is user-scoped.
+ */
+export interface AdminStore {
+  /** Flagged conversations first, then newest activity first. */
+  listConversations(filter: { userId?: string; needsAttention?: boolean; limit: number }): Promise<ConversationRecord[]>;
+  getConversation(conversationId: string): Promise<ConversationRecord | null>;
+  /** Chronological, all roles (including tool messages). */
+  listMessages(conversationId: string, limit: number): Promise<MessageRecord[]>;
+  /** Newest first. */
+  listRuns(filter: { conversationId?: string; limit: number }): Promise<RunWithToolCalls[]>;
+  countMessages(conversationIds: string[]): Promise<Record<string, number>>;
+  /** Clears the needs-attention flag, keeping the reason for the record. False if not flagged. */
+  resolveAttention(conversationId: string, by: string, at: Date): Promise<boolean>;
 }

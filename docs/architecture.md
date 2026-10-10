@@ -1,12 +1,12 @@
 # Architecture
 
-> Components marked _(planned)_ are not built yet. See the README for phase status.
+> All components below are built. See the README for what has and has not been verified against real services.
 
 ```mermaid
 flowchart LR
   subgraph Browser
     Chat["Chat UI (/) — WhatsApp-style<br/>reducer + SSE client"]
-    Admin["/admin — ops dashboard<br/>(planned, Phase 4)"]
+    Admin["/admin — ops dashboard<br/>Basic auth (proxy + every page/API)"]
   end
 
   subgraph Next["Next.js app (Node runtime)"]
@@ -35,7 +35,7 @@ flowchart LR
   Tools --> Actions --> Stores
   Tools --> Stores
   Svc --> Stores --> DB
-  Admin --> DB
+  Admin --> AdminSvc["adminService<br/>AdminStore (only cross-user port)"] --> DB
 ```
 
 ## One turn

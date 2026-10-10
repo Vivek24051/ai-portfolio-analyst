@@ -70,6 +70,8 @@ CREATE TABLE "Conversation" (
     "state" JSONB NOT NULL DEFAULT '{}',
     "needsAttention" BOOLEAN NOT NULL DEFAULT false,
     "attentionReason" TEXT,
+    "attentionResolvedAt" TIMESTAMP(3),
+    "attentionResolvedBy" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "lastMessageAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -119,6 +121,7 @@ CREATE TABLE "AgentRun" (
 CREATE TABLE "ToolCall" (
     "id" TEXT NOT NULL,
     "runId" TEXT NOT NULL,
+    "position" INTEGER NOT NULL DEFAULT 0,
     "name" TEXT NOT NULL,
     "args" JSONB NOT NULL,
     "result" JSONB,
@@ -179,7 +182,7 @@ CREATE INDEX "Message_conversationId_seq_idx" ON "Message"("conversationId", "se
 CREATE INDEX "AgentRun_conversationId_startedAt_idx" ON "AgentRun"("conversationId", "startedAt");
 
 -- CreateIndex
-CREATE INDEX "ToolCall_runId_idx" ON "ToolCall"("runId");
+CREATE INDEX "ToolCall_runId_position_idx" ON "ToolCall"("runId", "position");
 
 -- CreateIndex
 CREATE INDEX "PendingAction_conversationId_status_idx" ON "PendingAction"("conversationId", "status");

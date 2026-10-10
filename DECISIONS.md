@@ -175,3 +175,57 @@ If the browser goes away mid-stream, the turn still finishes, is saved, and is r
 
 ## D33. Safe rendering of model text
 Model output is rendered as React text nodes with a tiny formatter (paragraphs, bullet lists, bold), never as HTML. A test injects `<script>` and `<img onerror>` and asserts that no element is created.
+
+---
+## Phase 4: admin dashboard and observability
+
+## D34. HTTP Basic auth for admin, enforced in every handler
+A single business-team account is enough for this assignment, and Basic auth needs no login UI or session store.
+- **Every admin page and API handler checks credentials itself.** The Next.js proxy only adds the browser's login prompt and `no-store` headers; Next's own docs advise against relying on the proxy for authorization. Unauthenticated page renders return a 404 with no data.
+- **Fails closed:** no `ADMIN_PASSWORD` (or one under 12 characters) means 503, in development too. There is no dev fallback.
+- **Constant-time comparison** of SHA-256 digests.
+- **Lockout:** 10 failures per client per 5 minutes, after which even correct credentials are refused.
+
+**Trade-offs:** no logout, no per-user roles, and the lockout counter lives in each server instance. For more operators or SSO, replace this with a proper identity provider.
+
+## D35. CSRF guard on the one state-changing admin action
+Browsers re-send cached Basic credentials automatically, so a cross-site form could otherwise trigger "Mark as resolved". The action requires a same-origin `Origin` or `Referer`.
+
+The endpoint lives at `/admin/conversations/:id/resolve` rather than under `/api/admin`, because browsers scope cached Basic credentials by path; that way the form always carries the dashboard's credentials.
+
+## D36. One explicit cross-user port: `AdminStore`
+Every other storage interface is user-scoped. Cross-user reads exist only in `AdminStore`, which only admin-gated code may use (`src/server/admin/*`). Both backends implement it; tests exercise the in-memory one only, and say so.
+
+## D37. Flags are resolved by a human, not cleared automatically
+Resolving keeps `attentionReason` and records `attentionResolvedAt` and `attentionResolvedBy`. Any later flagging turn re-flags the conversation and clears the resolution.
+
+The init migration was regenerated to add these columns, plus a `ToolCall.position` column for tool order. That was safe because the migration had never been applied to any database.
+
+## D38. Missing metrics stay null
+Token counts and cost come only from what the provider reports.
+- A run-level total is `null` unless **every** successful model call reported the figure. A partial sum would look precise but would be wrong.
+- A reported zero stays 0.
+- The admin pages render `null` as "—" with a "not reported" tooltip.
+- No cost is estimated from price tables.
+- Extracting OpenRouter's cost field is written against **assumed** response shapes and hasn't been checked against a live call.
+
+## D39. Timing starts at request receipt
+Routes record `performance.now()` on arrival and pass it in. Each run then records these spans:
+- `request_validation` (auth, body parsing, rate limit)
+- `context_load`
+- `agent` (model calls and tool calls, also listed individually)
+- `persist`
+
+The run telemetry write itself happens after `totalMs` is computed and is excluded.
+
+## D40. Per-turn fallback circuit breaker
+Found while building the traces: once the primary model failed in a turn, every later model call in that turn tried the primary again. With a hanging primary, that would cost the 20 s per-call timeout on **every** tool round.
+
+Now the first primary failure sends the rest of that turn straight to the fallback. The next turn tries the primary again, so a brief outage doesn't pin traffic to the fallback.
+
+## D41. Redaction before anything is logged or stored
+- Error strings, which can echo provider request details, are redacted (API keys, bearer tokens, connection strings, secret key=value pairs, the configured secret values themselves) and length-capped before being logged or saved as `run.error`.
+- Server logs print one redacted line per error, with no raw objects or stack dumps.
+- Admin trace previews of tool arguments and results are redacted and capped at 1,500 characters.
+
+A bug in the first version of the redactor (it treated the match offset as a captured group, which leaked a connection string) was caught by a test and fixed.
