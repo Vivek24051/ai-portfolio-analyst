@@ -27,47 +27,10 @@ async function main() {
 
   // Imported lazily so the dry run works without a generated client or DATABASE_URL.
   const { PrismaClient } = await import("@prisma/client");
+  const { seedDatabase } = await import("./seedDatabase");
   const prisma = new PrismaClient();
   try {
-    await prisma.$transaction(async (tx) => {
-      for (const u of seed.users) {
-        const data = {
-          name: u.name,
-          city: u.city,
-          preferences: u.preferences,
-          preferredLocations: u.preferredLocations,
-          portfolioValuePreferenceRaw: u.portfolioValuePreferenceRaw,
-          prefMinInr: u.prefMinInr === null ? null : BigInt(u.prefMinInr),
-          prefMaxInr: u.prefMaxInr === null ? null : BigInt(u.prefMaxInr),
-        };
-        await tx.user.upsert({ where: { id: u.id }, create: { id: u.id, ...data }, update: data });
-      }
-      for (const p of seed.properties) {
-        const data = {
-          userId: p.userId,
-          propertyTypeRaw: p.propertyTypeRaw,
-          assetClass: p.assetClass,
-          subType: p.subType,
-          locationRaw: p.locationRaw,
-          locality: p.locality,
-          city: p.city,
-          state: p.state,
-          areaSqft: p.areaSqft,
-          currentValueInr: BigInt(p.currentValueInr),
-          purchasePriceInr: p.purchasePriceInr === null ? null : BigInt(p.purchasePriceInr),
-          annualRentInr: BigInt(p.annualRentInr),
-          occupancyStatus: p.occupancyStatus,
-          ownershipPercent: p.ownershipPercent,
-          status: p.status,
-          source: "seed",
-        };
-        await tx.property.upsert({
-          where: { id: p.id },
-          create: { id: p.id, ...data },
-          update: { ...data, version: { increment: 1 } },
-        });
-      }
-    });
+    await seedDatabase(prisma, seed);
     console.log("Seed complete.");
   } finally {
     await prisma.$disconnect();
