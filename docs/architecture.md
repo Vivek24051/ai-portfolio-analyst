@@ -76,7 +76,10 @@ sequenceDiagram
 - **Writes.** Every write needs a pending action. Confirmation happens in a later turn, with either a clear yes or the button, which never calls the LLM. Writes are transactional and use optimistic locking.
 - **Bounded execution.** At most 5 tool rounds. Each model call has its own timeout and the turn has an overall deadline; the user always gets a reply.
   - **Model failures:** a failing model moves on to the fallback (which may be another provider), then to the labelled dev stub when the last resort is enabled.
-  - **Account errors:** a 401/402 is never retried on the same provider for the rest of the turn, including later tool rounds.
+  - **Account errors:** a 401/402/403, or Gemini's 400 "API key not valid", is never retried on the same provider for the rest of the turn, including later tool rounds. Those models also cool down for 60 s.
+  - **Quota cooldown:** after a 429 the model is skipped by later turns on that server instance until its cooldown ends: `Retry-After`, else Gemini's retry hint, else 60 s, clamped to 1 s–15 min. Cooldowns are expiry timestamps, with no timers.
+  - **Per-turn call cap:** at most `LLM_MAX_MODEL_CALLS_PER_TURN` (default 4) real model calls per user turn, across rounds and the chain; then the labelled stub answers.
   - **Per-turn circuit breaker:** a model that failed is not called again in that turn.
-  - **Visibility:** a stub last-resort answer flags the conversation `model_degraded`.
+  - **Visibility:** a stub last-resort answer flags the conversation `model_degraded`, with the reason (error, cooldown or cap). The stub says "AI model unavailable", never "no LLM configured".
+  - **Evidence:** tested offline with synthetic Gemini responses only; live Gemini behaviour is unverified.
 - **Free-only by default.** `LLM_PROVIDER=stub` builds no model client. OpenRouter model ids must end in `:free` unless `OPENROUTER_ALLOW_PAID=true` (default off); the evaluation runner enforces the same rule. Keys are never logged or shown; provider errors are redacted before storage.

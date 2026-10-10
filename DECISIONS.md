@@ -11,7 +11,7 @@ Each entry: decision, why, trade-off. Labels: **[fact]** comes from the brief or
 | Correct numbers | D4, D5 (the LLM never does arithmetic), D18 (pre-formatted tool output), D44 (numeric faithfulness checked in production) |
 | Dataset judgement calls | D6 (type normalisation; COMMERCIAL = retail + office), D7 (location), D8 (missing purchase prices and dates are reported, never guessed) |
 | Safe writes | D11 (propose → confirm), D12 (near-duplicates), D17 (no identity in tool arguments), D25 (Confirm skips the LLM) |
-| Failures and model routing | D20 (timeouts), D21, D40, D46, D57 (fallback chain, circuit breaker, free-only guard), D23 (honest failure replies) |
+| Failures and model routing | D20 (timeouts), D21, D40, D46, D57 (fallback chain, circuit breaker, free-only guard), D58 (Gemini quota cooldown, account errors, per-turn call cap), D23 (honest failure replies) |
 | Observability and the business view | D34–D38 (admin auth, attention flags, nulls for unreported metrics), D41 (redaction) |
 | Evaluation honesty | D42, D43 (golden set and controls), D47 (benchmarks keep their conditions), D56 (the stub is no longer a negative control) |
 | Cost | D24, D49, D52 (stub default, free Gemini tier, `LLM_PROVIDER=stub` builds no client) |
@@ -462,3 +462,39 @@ The guard checks only the id suffix. Gemini has no equivalent in code: it stays 
 - **The bug:** a same-provider fallback *skipped* after the primary's 401/402 was not recorded in the turn's circuit breaker. If the stub's last-resort answer then called a tool, the next round called that fallback once, with the same key.
 - **The fix:** skipped models are now added to `failedModelIds`, so the rest of the turn skips them too.
 - **The test:** a two-round test in `tests/providerFallback.test.ts` (scripted models only) reproduced the bug before the fix and passes after it.
+
+## D58. Gemini quota and credential safeguards (2026-10-11)
+**Why:** the read-only Gemini audit found four gaps:
+- a bad Gemini key (HTTP 400 "API key not valid") or a 403 was treated as a temporary error, so a same-key Gemini fallback was called again;
+- after a 429, every new turn called the exhausted model again;
+- the degraded stub said "no LLM configured" and showed setting names to end users;
+- nothing capped real model calls per turn below (5 tool rounds + 1) × chain length = 12.
+
+**Decisions** (`src/agent/model.ts`, `src/agent/config.ts`, `src/server/container.ts`, `src/agent/devStubModel.ts`):
+- **Account errors** are now 401, 402, 403, and a 400 whose message or body says the API key is invalid (`API_KEY_INVALID`). They block the same provider for the turn (D46/D57), and the affected models cool down for 60 s. An ordinary 400 is still an ordinary failure.
+- **429 cooldown.** It is shared by every turn on a server instance and lives on the router, which the container creates once per process.
+  - **Length:** the `Retry-After` header (seconds or HTTP date), else Gemini's `retryDelay` / "retry in N s", else 60 s. A daily quota ("PerDay") gets the 15-minute maximum. Every cooldown is clamped to 1 s – 15 min.
+  - **No timers:** entries are expiry timestamps, expired lazily. At most 32 entries; when full, the entry ending soonest is dropped.
+  - **Scope:** a different model, with its own quota, is still tried. If every real model is cooling and there is no stub, the turn fails fast with "no model available", without sending a request.
+- **Per-turn cap:** `LLM_MAX_MODEL_CALLS_PER_TURN` (default 4, clamped 1–12) limits calls to real models across all rounds and both links; failed calls count. When reached, the labelled stub answers from the last tool result. Proposals made earlier in the turn stay unconfirmed; confirmation still needs a later turn.
+- **Last-resort stub:**
+  - **Wording:** behind a real model, the stub has its own id (`dev-stub (last resort, no LLM)`) and prefixes (`[dev stub — AI model unavailable …]`).
+  - **No settings exposed:** its help text names no settings, in either mode.
+  - **Reason recorded:** the `model_degraded` reason now includes the redacted cause (error, cooldown or cap).
+
+**Trade-offs:**
+- Cooldowns are per instance (no shared store), and a restart forgets them.
+- A cap of 4 can cut a long tool-using turn short, but it bounds quota use per message.
+- 403 is an account error for every provider, so an OpenRouter moderation 403 also stops other OpenRouter models for that turn. That is the conservative side.
+
+**Not changed:**
+- Provider selection: Gemini failures never route to OpenRouter unless `LLM_FALLBACK_PROVIDER=openrouter` is set explicitly with a `:free` id.
+- The paid-OpenRouter opt-in, which stays off.
+- Tool safety and propose → confirm.
+
+**Evidence:** `tests/geminiSafeguards.test.ts` runs the real LangChain/OpenAI client against synthetic Gemini error bodies, both the object form and Google's array-wrapped form. Each safeguard was mutation-checked: removing it makes these tests fail.
+
+**Not verified:**
+- real Gemini error bodies and headers;
+- whether rejected or timed-out requests count toward quota;
+- real calls per turn.

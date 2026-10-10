@@ -46,7 +46,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 - The admin username and password are **not in this repository**. They are shared privately through the submission form.
 
 **Verified offline on the current working tree (2026-10-11):**
-- `npm test`: 28 files, 422/422 tests;
+- `npm test`: 29 files, 443/443 tests;
 - `npm run typecheck`: clean;
 - `npm run build`: succeeds with `LLM_PROVIDER=stub`;
 - evaluations: oracle 40/40, perturbed 12/40 (caught as intended), stub 40/40, each with 0 safety violations.
@@ -231,20 +231,35 @@ The chat UI and admin pages show a banner whenever the stub is active.
    LLM_FALLBACK_MODEL=<vendor/model>:free
    OPENROUTER_API_KEY=<your key>
    # LLM_STUB_LAST_RESORT=true                 # default: the labelled stub answers if both fail
+   # LLM_MAX_MODEL_CALLS_PER_TURN=4            # default: hard cap on real model calls per user turn (1–12)
    ```
 4. Restart `npm run dev`. The "Demo mode" banner disappears, and the admin traces show the model and provider of every call.
 
-How the chain behaves (all covered by offline tests in `tests/providerFallback.test.ts`; none uses a real provider):
+How the chain behaves. All of this is covered by offline tests in `tests/providerFallback.test.ts` and `tests/geminiSafeguards.test.ts`. None of them uses a real provider: Gemini error responses are synthetic, modelled on Google's documented error format.
 - **Timeouts, 429 and 5xx** move on to the next model.
-- **401/402 (bad key, no credits):**
-  - **never retried on the same provider** for the rest of the turn, including later tool rounds, because it shares the key and credits;
-  - a **different** provider is still tried;
-  - a model whose provider is unknown is treated as the same account.
-- **Last resort.** If every real model fails, the **labelled dev stub** answers.
+- **Account errors:** 401 (bad credentials), 402 (no credits), 403 (permission denied), and Gemini's 400 "API key not valid" (`API_KEY_INVALID`).
+  - **Never retried on the same provider** for the rest of the turn, including later tool rounds, because it shares the key and credits.
+  - The failing model, and any same-account model skipped because of it, also get a 60 s cooldown, so the next turns don't resend the bad key.
+  - A **different** provider is still tried.
+  - A model whose provider is unknown is treated as the same account.
+  - A 400 that isn't about the key (for example a malformed request) is an ordinary failure.
+- **Quota cooldown (429).** A model that returns 429 is not called again, by any turn on that server instance, until its cooldown ends. The cooldown is:
+  - the `Retry-After` header (seconds or an HTTP date) when present;
+  - otherwise Gemini's `retryDelay` / "retry in N s" hint;
+  - otherwise **60 s**.
+
+  A daily quota ("PerDay") cools for the maximum. Every cooldown is clamped to **1 s – 15 min**. Cooldowns are timestamps checked on use: there are no timers, and the store holds at most 32 entries. Each serverless instance keeps its own, and a restart clears them.
+- **Per-turn cap on real model calls.** `LLM_MAX_MODEL_CALLS_PER_TURN` (default **4**, clamped to 1–12) limits calls to real models in one user turn.
+  - It counts across all tool rounds and both links of the chain, and failed calls count too.
+  - When the cap is reached, the labelled stub answers. Without a stub, the turn ends with the "model unavailable" reply.
+  - A write the model proposed earlier in the turn is still only a proposal; it needs the user's confirmation in a later turn.
+- **Last resort.** If every real model fails, is cooling down, or the cap is reached, the **labelled dev stub** answers.
+  - In this role its replies are prefixed `[dev stub — AI model unavailable …]`. It never says "no LLM configured", and its help text names no settings.
   - The admin trace shows a "stub last resort" badge.
-  - The conversation is flagged `model_degraded`, so an outage stays visible.
+  - The conversation is flagged `model_degraded`, with the reason (error, cooldown or cap), so an outage stays visible.
   - `LLM_STUB_LAST_RESORT=false` disables this; an outage then gives the error reply.
 - **Per-turn circuit breaker.** A model that failed once in a turn isn't called again in that turn.
+- **No hidden retries.** The client is built with `maxRetries: 0`; every attempt is a link in this chain.
 - **Secrets stay out of view.**
   - Keys never appear in logs, the admin trace or error text, because provider errors are redacted.
   - Configuration warnings never echo values.
@@ -519,6 +534,7 @@ All of these are recorded in [DECISIONS.md](DECISIONS.md).
 | `stubFormat` | Dev-stub template replies: readable, no raw JSON, every figure traceable to tool output; filters, totals, comparisons and what-ifs, with figures derived from the domain functions | In-memory store |
 | `stubUpdates` | Dev-stub writes through propose → confirm: updates, new properties (missing details, duplicates, multi-turn drafts), status changes, cancel, expiry, optimistic locking, tenant isolation, hand-off | In-memory store |
 | `providerSelection`, `providerFallback` | Provider chain (Gemini → OpenRouter `:free` → stub), the `LLM_PROVIDER=stub` default, refusal of non-free OpenRouter ids, 429/5xx/timeout/401/402 handling across providers, last-resort stub, per-turn circuit breaker, admin trace flags, key redaction | Scripted models; a `fetch` spy fails on any network attempt |
+| `geminiSafeguards` | The real LangChain/OpenAI client over Gemini's endpoint:<br>• 400 invalid key (object and array bodies), 401 and 403 treated as account errors, while an ordinary 400 isn't<br>• 429 cooldown across turns, with and without `Retry-After`, from the body's `retryDelay`, for a daily quota, and clamped<br>• a bounded, timer-free cooldown store<br>• per-turn cap on real model calls (a proposal made before the cap stays unconfirmed)<br>• last-resort stub wording | Synthetic Gemini error bodies, modelled on Google's documented format. Scripted models. A `fetch` spy fails on any network attempt |
 | `observability` | Token/cost aggregation (missing ≠ zero), cost extraction, redaction, per-turn fallback circuit breaker | Scripted models; cost metadata shapes are assumed |
 
 Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38% retail, and excluding Bandra gives ₹17.7 Cr.
@@ -526,6 +542,11 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 **Not tested yet:**
 - **Systematic real-model evaluation.** Gemini (free tier) has been used manually in the chat, but the 40-case evaluation has **not** been run against any real model. Real-model latency, tokens, tool-calling accuracy and fallback behaviour against live providers are **not measured** (PERFORMANCE.md §5).
 - **Live OpenRouter responses.** The integration and the fallback chain are verified only against synthetic payloads and scripted models. Whether a given `:free` model is available and supports tool calling is **unverified**.
+- **Live Gemini errors and quota.** The 400/401/403/429 handling, the cooldowns and the call cap are tested only against **synthetic** Gemini responses. **Not observed:**
+  - what Gemini actually returns for a bad key or an exhausted quota;
+  - whether it sends `Retry-After`;
+  - whether a rejected or timed-out request counts toward quota;
+  - how many calls a real model makes per turn.
 - **Deployment, beyond manual checks.**
   - The app is deployed (Vercel + Neon, stub mode) and was checked by hand.
   - There is no automated test against the deployment.
@@ -543,6 +564,10 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 - **Real model only manually checked.** The live app runs on the dev stub, which shows real tools, calculations and safeguards, but not conversation quality.
   - **With a real model:** answers depend on that model and its free-tier rate limits, and have only been checked by hand.
   - **When every real model fails:** the labelled stub answers and the conversation is flagged `model_degraded`.
+- **Quota safeguards are per server instance and conservative.**
+  - Cooldowns live in each serverless instance's memory: another instance may still call a model that is cooling elsewhere, and a restart clears them.
+  - The per-turn cap (default 4 real calls) can cut a long tool-using turn short; the labelled stub then answers from the last tool result.
+  - A 403 is treated as an account error for every provider, so an OpenRouter 403 (e.g. moderation) also stops other OpenRouter models for that turn.
 - **Stub tuned to the evaluation.** The stub's 40/40 reflects pattern work against the golden set's own wording, not general language understanding.
 - **No real authentication.** The demo user picker with a signed cookie is the agreed scope.
 - **In-memory data** resets when the server restarts, and each serverless instance has its own copy. Use `DATA_BACKEND=prisma` for persistence.

@@ -173,6 +173,12 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 
 **Not measured yet:** with a real model, latency will be dominated by LLM round trips. The number of round trips is a property of our design and is already measured: p50 is **2 model calls per turn** (tool call, then answer) and the maximum is 3 in the golden set.
 
+**Bounded quota use per turn** (D58; tested offline with synthetic Gemini responses only):
+- Real model calls are capped at `LLM_MAX_MODEL_CALLS_PER_TURN` (default 4) per user turn, across tool rounds and the fallback chain. Without the cap the worst case was (5 tool rounds + 1) × 2 models = 12.
+- A model that returned 429 is skipped by later turns until its cooldown ends (`Retry-After`, else Gemini's retry hint, else 60 s; at most 15 min).
+- The client makes no automatic retries (`maxRetries: 0`).
+- **Not measured:** how many calls a real model actually makes per turn, and whether rejected or timed-out requests count toward the free quota.
+
 **Latency work already in place:**
 - **Aggregating tools,** so most questions need one tool round. `portfolio_analytics` returns totals, mix, extremes, and data gaps in one call.
 - **A property index without numbers in the prompt.** "The Bandra one" is resolved without a lookup round trip.
