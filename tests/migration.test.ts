@@ -19,6 +19,8 @@ describe("prisma migrations", () => {
     const generated = execSync("npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script", {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      // Fully offline: disable the Prisma CLI's optional update/telemetry check.
+      env: { ...process.env, CHECKPOINT_DISABLE: "1" },
     });
     expect(normalise(generated)).toBe(normalise(committed));
   }, 60_000);

@@ -2,19 +2,18 @@
 
 A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style chat and a separate business operations dashboard. Users can ask about their portfolio, explore what-if scenarios, and add or update properties. Every figure is calculated by the backend, and every write requires the user's confirmation.
 
-> **Status: in progress.**
+> **Status: complete within a free-only scope.**
 >
 > | Phase | Scope | Status |
 > |---|---|---|
 > | 0 | Scaffold, schema, seed | ✅ |
 > | 1 | Domain core and tests | ✅ |
 > | 2 | Agent, tools, memory, chat API | ✅ (tested with mocked models) |
-> | 3 | Chat UI + streaming | ✅ (UI tested in jsdom; not yet with a real LLM) |
-> | 4 | Admin dashboard + observability | ✅ (in-memory store, dev stub and scripted models only) |
-> | 5 | Evaluation and performance | ✅ zero-cost stage (mocked models) · ⏸ paid model evaluation awaiting approval |
-> | 6 | Docs and deploy prep | ⏳ |
+> | 3 | Chat UI + streaming | ✅ (UI tested in jsdom and over local HTTP) |
+> | 4 | Admin dashboard + observability | ✅ (in-memory store, dev stub and scripted models) |
+> | 5 | Evaluation and performance | ✅ free-only: grader/control tests and local benchmarks ([FREE_ONLY_EVALUATION.md](FREE_ONLY_EVALUATION.md)) |
 >
-> Sections marked _(planned)_ describe work that is not built yet. **No real LLM has been called yet.** The agent has been exercised only with scripted test models and the dev stub.
+> **No real LLM has been called, and no database or deployment has been used.** The agent is exercised with scripted test models, an oracle reference policy, and the keyword dev stub. Real-model quality, PostgreSQL, and deployment remain untested (see "Not tested").
 
 ## Documents
 
@@ -22,7 +21,8 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 |---|---|
 | [SOUL.md](SOUL.md) | The agent's role, voice, boundaries, and when it asks questions or hands off to a human |
 | [DECISIONS.md](DECISIONS.md) | Decision log: engineering choices and trade-offs |
-| [PERFORMANCE.md](PERFORMANCE.md) | Methodology, measured results, evaluation scores, paid-run plan, scaling |
+| [PERFORMANCE.md](PERFORMANCE.md) | Methodology, measured results, evaluation scores, what is not measured, scaling |
+| [FREE_ONLY_EVALUATION.md](FREE_ONLY_EVALUATION.md) | Exact commands for the no-cost evaluation, what each control proves, what needs real infrastructure |
 | [docs/eval/](docs/eval/) | Generated evaluation and benchmark reports |
 | [docs/architecture.md](docs/architecture.md) | End-to-end architecture diagram |
 
@@ -57,6 +57,8 @@ src/
     conversationState.ts  Backend-owned state: focus ids, active scenario, pending action
     present.ts         Pre-formatted ₹/% output for the model
     telemetry.ts       Per-turn spans, LLM calls, tool calls
+    faithfulness.ts    Every figure in a reply must trace to tool output (production flag + eval metric)
+    events.ts          Streaming (SSE) event protocol with user-safe tool summaries
     devStubModel.ts    Keyword router used when no API key is set (NOT an LLM)
   server/
     services/chatService.ts      One chat turn end to end + the LLM-free confirm/cancel path
@@ -112,7 +114,28 @@ Then run `npm run build`, then `npm start`.
 
 No key is needed for any of this: without `OPENROUTER_API_KEY` the app uses the labelled dev stub, and data is in memory.
 
-Optional, to use a real model: set `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL` (and optionally `LLM_FALLBACK_MODEL`). OpenRouter usage is paid.
+### Dev stub vs. a real model
+
+Without `OPENROUTER_API_KEY` (the default, and how this project was built and evaluated), the "model" is `src/agent/devStubModel.ts`. It is **a keyword router, not an LLM**.
+
+**What the dev stub does:**
+- Recognises a few phrasings (portfolio overview or total, "show my retail/office/residential properties", "properties in Mumbai/Bengaluru/Delhi NCR…", highest rent, yield) and calls the **real** tools, which run the real calculations on the real data.
+- Replies with the raw tool output, prefixed `[dev stub — no LLM configured]`.
+- Can stream word by word (`DEV_STUB_STREAM_DELAY_MS`, default 12 ms) so the streaming UI can be demonstrated.
+
+**What it does not do:**
+- Choose between all nine tools.
+- Ask clarifying questions.
+- Propose or confirm property changes.
+- Run what-if scenarios.
+- Resolve follow-ups like "which one…".
+- Write natural-language answers.
+
+The chat UI and admin pages show a banner whenever the stub is active.
+
+**What a real model would do:** pick tools, interpret follow-ups, ask for missing details, propose changes, and phrase answers from tool output. Those agent behaviours are implemented, and are exercised offline by scripted test models and by the oracle reference policy. They have **not** been run with a real LLM in this submission.
+
+(Optional, not used here: setting `OPENROUTER_API_KEY` and `LLM_PRIMARY_MODEL` switches to OpenRouter, which is a paid service.)
 
 ### Database (optional)
 
@@ -140,7 +163,7 @@ The synthetic dataset is committed in [`data/seed/`](data/seed/) as byte-identic
 |---|---|
 | `users.csv` | Seed (Postgres), in-memory store, tests: the demo users |
 | `properties.csv` | Seed (Postgres), in-memory store, tests: the portfolios |
-| `sample_requests.csv` | Reference prompts for the evaluation harness (Phase 5) and the chat's suggestion chips |
+| `sample_requests.csv` | The six sample requests, replayed as golden cases R001–R006 by the evaluation harness (`eval/cases.ts`) |
 | `DATASET.md` | The assignment's own dataset notes, kept for reference |
 
 These files are **read-only inputs**. They are never edited; normalisation happens in code and is logged by `npm run db:seed:dry`.
@@ -220,7 +243,15 @@ npm run test:coverage    # unit/integration coverage
 
 The oracle and perturbed controls also run inside `npm test` (`tests/eval.test.ts`), so any regression in tools, numbers, or graders fails CI.
 
-**Paid mode** (`--mode openrouter`) refuses to start unless `EVAL_ALLOW_PAID=1`, `--confirm-paid`, `--max-calls`, and `--max-cost-usd` are all set. It has not been run. The plan and budget are in [PERFORMANCE.md §5](PERFORMANCE.md).
+**These are grader and control tests, not AI-quality results.** The oracle is a scripted ideal agent, the perturbed run is the oracle with falsified figures, and the dev stub is a keyword router. Their purpose is to show that the tools, numbers, safety checks, and graders behave correctly. Exact commands and expected results: [FREE_ONLY_EVALUATION.md](FREE_ONLY_EVALUATION.md).
+
+| Control | Cases passed | Numeric faithfulness | Clarification | Safety violations |
+|---|---|---|---|---|
+| Oracle (must pass) | 40/40 | 34/34 | 7/7 | 0 |
+| Perturbed oracle (falsified figures; must be caught) | 12/40 | 1/34 | 7/7 | 0 |
+| Dev stub (keyword router; must be caught) | 17/40 | 31/31 (echoes tool JSON) | 0/7 | 0 |
+
+The runner also has an `--mode openrouter` for a real model. It is **not used** in this free-only submission and refuses to start without explicit opt-in flags and spend caps ([PERFORMANCE.md §5](PERFORMANCE.md)).
 
 **Production check on every turn:** each reply is scanned for figures, and any ₹, % or count that isn't in tool output (or in the user's own message) flags the conversation as `unsupported_numbers`.
 
@@ -229,7 +260,8 @@ The oracle and perturbed controls also run inside `npm test` (`tests/eval.test.t
 1. `POST /api/chat/stream` (used by the UI) or `POST /api/chat` (JSON) takes `{message, conversationId?}`.
    - Auth, body validation, rate limit, and conversation ownership are all checked **before** the stream opens, so those failures are ordinary HTTP errors.
    - The stream sends `start`, `status`, `tool_start` / `tool_end`, `delta`, `reset`, and finally `done` or `error`.
-   - If the client disconnects, the turn still completes and is saved. The body is checked by a strict schema: an extra field such as `userId` gets a 400. The user id comes **only** from the signed cookie.
+   - If the client disconnects, the turn still completes and is saved.
+   - The body is checked by a strict schema: an extra field such as `userId` gets a 400. The user id comes **only** from the signed cookie.
 2. The service loads the conversation (scoped to that user), the last 30 messages (the window always starts at a user message), the structured state, and the user's properties.
 3. The system prompt contains:
    - the rules from SOUL.md
@@ -286,25 +318,43 @@ All of these are recorded in [DECISIONS.md](DECISIONS.md).
 Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38% retail, and excluding Bandra gives ₹17.7 Cr.
 
 **Not tested yet:**
-- Real model behaviour: tool-choice quality, answer faithfulness, latency, tokens, and cost. The harness is ready; the paid run awaits approval (PERFORMANCE.md §5).
+- Real model behaviour: tool-choice quality, answer faithfulness, latency, tokens, and cost. This is intentionally not performed in this free-only submission (PERFORMANCE.md §5).
 - Live OpenRouter responses. The integration is verified only against synthetic payloads in OpenRouter's documented format.
+- Deployment. The app has not been deployed, so there is no live URL, and no internet latency or concurrent-load measurement.
 - The Prisma store, the migration and the seed against a live Postgres. This includes the admin queries (`AdminStore` over Prisma): the admin tests run on the in-memory store, which does **not** demonstrate PostgreSQL persistence.
 - The UI in a real browser (it is covered by jsdom tests and an HTTP smoke test only) and with real streamed LLM output.
 
-## Known limitations (so far)
+## Known limitations
 
-- No real authentication. The demo user picker with a signed cookie is the agreed scope.
-- In-memory data resets when the server restarts, and each serverless instance has its own copy. Use `DATA_BACKEND=prisma` for persistence.
-- The rate limit (20 messages per minute per user) is per server instance.
-- `costUsd` is not filled in yet. Token counts are recorded when the provider returns them.
-- The Prisma store, the init migration and the Postgres seed have not been run against a live database (see "Database").
-- The UI has been tested in jsdom and smoke-tested over HTTP, but not with a real LLM's streamed output.
-- Admin auth is single-account HTTP Basic auth: there is no logout (close the browser), no roles, and the lockout counter is per server instance.
-- Token usage and cost are recorded only if the provider reports them; extracting OpenRouter's cost field is an untested assumption.
+- **No real model has been used.** The live app runs on the dev stub, so the chat demo shows real tools and calculations but not real-LLM conversation quality (see "Dev stub vs. a real model").
+- **No real authentication.** The demo user picker with a signed cookie is the agreed scope.
+- **In-memory data** resets when the server restarts, and each serverless instance has its own copy. Use `DATA_BACKEND=prisma` for persistence.
+- **Per-instance limits.** The chat rate limit (`CHAT_RATE_LIMIT_PER_MIN`, default 20 messages per minute per user) is per server instance.
+- **Postgres untested.** The Prisma store, the init migration, and the Postgres seed have not been run against a live database (see "Database").
+- **UI tested without a browser.** The UI has been tested in jsdom and over local HTTP, but not in a real browser by an automated test, and not with a real LLM's streamed output.
+- **Admin auth** is single-account HTTP Basic auth: there is no logout (close the browser), no roles, and the lockout counter is per server instance.
+- **Token usage and cost** are recorded only if the provider reports them. The cost field's location was verified on synthetic OpenRouter payloads only.
+- **Empty attention queue in a live demo.** With the dev stub, the admin "needs attention" queue stays empty, because the stub never hands off, fails, or invents figures. Flagging is demonstrated by the tests and the evaluation instead (see the walkthrough).
+
+## Demo walkthrough (5–10 minutes, free)
+
+Setup before presenting:
+1. `npm install`
+2. Create `.env.local` with `ADMIN_USERNAME`/`ADMIN_PASSWORD` (see "Run it locally").
+3. `npm run dev`
+
+| Time | Show | Say |
+|---|---|---|
+| 0:00–1:00 | `docs/architecture.md` diagram | The problem; why a single tool-calling agent (LangGraph); numbers come from deterministic domain code, never the model |
+| 1:00–3:00 | Chat at `localhost:3000`: pick **Rahul Mehta** → "portfolio overview", then "show my retail properties". Switch to **Priya Shah** → "Show me my properties in Mumbai" | Live streaming tool steps; real figures (₹29.7 Cr); Alibaug correctly excluded from Mumbai; the demo banner, and what the dev stub is versus a real model |
+| 3:00–4:30 | `/admin` → the conversation just created → execution trace | Spans, model and tool calls, the numeric-faithfulness result, "—" for tokens and cost the stub doesn't report; Basic auth on every admin page and API |
+| 4:30–6:30 | `SOUL.md` and the code: `src/agent/tools.ts`, `src/server/services/propertyActions.ts`, `src/domain/scenario.ts` | Strict schemas with no `userId`; propose → confirm (same-turn self-confirm is blocked); hypotheticals run on a clone; user scoping |
+| 6:30–8:30 | Terminal: `npm test` (278 tests, offline), then `npx vitest run tests/eval.test.ts tests/admin.test.ts` | The golden set; oracle 40/40; the perturbed control is caught by the faithfulness check; attention flags and resolution; execution traces |
+| 8:30–10:00 | `PERFORMANCE.md` §2, §6, §7 | Measured: about 4 ms server overhead per turn and about 10 ms over local HTTP. Tool schemas are 83% of input tokens. **Not measured:** real LLM, Postgres, deployment. Next steps: prompt caching, a queue for WhatsApp, shared rate limits |
 
 ## External dependencies
 
 | Dependency | Status |
 |---|---|
 | PostgreSQL | Optional (`DATA_BACKEND=prisma`). Local install, or Neon (free tier) for deployment |
-| OpenRouter API key | Optional. Without it the dev stub is used. With it, usage is paid |
+| OpenRouter API key | Not used in this submission. Without it the dev stub is used; OpenRouter itself is a paid service |

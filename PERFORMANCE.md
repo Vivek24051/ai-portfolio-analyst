@@ -1,8 +1,8 @@
 # Performance & Evaluation
 
-> **Status (Phase 5, zero-cost stage).** Everything below was measured on a local machine with **mocked models**: the oracle reference policy, the keyword dev stub, and synthetic OpenRouter payloads. **No real LLM has been called.**
+> **Status: free-only evaluation.** Everything below was measured on a local machine with **mocked models**: the oracle reference policy, the keyword dev stub, and synthetic OpenRouter payloads. **No real LLM has been called.**
 >
-> These results therefore cover our own pipeline (HTTP, auth, validation, LangGraph, tools, persistence, SSE) and the correctness of the harness and graders. They do **not** say anything about real model quality, model latency, tokens, or cost. Those sections say "not measured yet" and stay that way until an approved paid run.
+> These results therefore cover our own pipeline (HTTP, auth, validation, LangGraph, tools, persistence, SSE) and the correctness of the harness and graders. They do **not** say anything about real model quality, model latency, tokens, or cost, which are intentionally not measured (§5, §6).
 
 ## 1. Methodology
 
@@ -89,7 +89,7 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 - **Perturbed oracle:** the faithfulness metric catches falsified figures independently of tool behaviour; tool selection and arguments still score 100% when only the numbers are wrong.
 - **Dev stub:** the behavioural graders (clarification, hypothetical labels, tool choice) catch a weak agent.
 
-**What it does not show:** how any real LLM scores. That is what the paid run is for (§5).
+**What it does not show:** how any real LLM scores. These are **grader and control tests**, not AI-quality results. A real-model evaluation is intentionally out of scope for this free-only submission (§5).
 
 ### 2.4 Token planning estimates (cl100k approximation; not usage)
 
@@ -166,48 +166,31 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 - **Bounded history** (30 messages) with old tool payloads trimmed.
 
 **Next optimisations, by impact:**
-1. **Prompt caching for the static prefix** (tool schemas and rules, about 4.5k tokens). The catalogue lists cache-read prices around 10× cheaper than normal input for several candidate models. This would cut most input cost and some time to first token.
+1. **Prompt caching for the static prefix** (tool schemas and rules, about 4.5k tokens). Where a provider supports prompt caching, the identical prefix on every call is the part that benefits; the size of that effect is not measured here.
 2. **Trim tool schemas** (shorter descriptions, fewer optional fields). They are 83% of input tokens.
 3. **Route simple lookups to a cheaper or faster model,** if the evaluation shows equal accuracy.
 
-## 5. Paid evaluation plan (awaiting your approval; nothing has been run)
+## 5. Real-model evaluation: intentionally not performed (free-only scope)
 
-Prices are from OpenRouter's public model catalogue, read today with an unauthenticated GET of `/api/v1/models`. They change, so re-check before running.
+This submission is deliberately **free**. No OpenRouter or other LLM endpoint has been called, by any test, script, or benchmark, and none is needed to build, test, or run the app.
 
-| Role | Model | $/M input | $/M output | Why |
-|---|---|---|---|---|
-| Primary (proposed) | `anthropic/claude-haiku-5.5` | 0.10 | 0.50 | Cheap, fast tier with tool calling and 1M context |
-| Fallback / comparison | `openai/gpt-5-mini` | 0.25 | 2.00 | Different provider, so an outage doesn't take out both |
-| Optional quality ceiling | `anthropic/claude-sonnet-5.5` | 2.00 | 10.00 | Shows how much accuracy a larger model buys |
+What exists, so a real-model run could be added later without code changes:
+- `npm run eval -- --mode openrouter` replays the same 40 golden cases and graders against a real model.
+- It **refuses to start** unless `EVAL_ALLOW_PAID=1`, `--confirm-paid`, `OPENROUTER_API_KEY`, `LLM_PRIMARY_MODEL`, `--max-calls`, and `--max-cost-usd` are all set. It then stops at whichever cap it reaches first. These guards are unit-tested in `tests/eval.test.ts`, with no network.
+- The request shape, response parsing, streaming, usage and cost extraction, timeouts, and fallback were verified offline against synthetic OpenRouter payloads (`tests/openrouter.test.ts`).
 
-**Request estimate per full golden pass:** the oracle needs 95 calls, and I allow 1.5× for real models (extra lookups, recovery), giving about **145 calls**. Each call is about 5.3k input tokens (p95) and I assume a generous 300 output tokens, so about **0.77M input and 0.04M output tokens** per pass. Tokenizer differences add roughly ±25%.
+The **workload** of such a run is known from offline measurement (§2.4): one pass makes about 95 model calls under the oracle policy, more with a real model, at about 4.7k input tokens per call. Prices, latency, and quality are **not** known and are not estimated here.
 
-| Stage | Calls (est.) | Est. cost |
+## 6. Not measured: needs real infrastructure
+
+| Measurement | Needs | Status |
 |---|---|---|
-| 1. Smoke test: 3 cases on Haiku 5.5 | ≈ 10 | < $0.01 |
-| 2. Full set × 3 repeats on Haiku 5.5 | ≈ 435 | ≈ $0.30 |
-| 3. Full set × 3 repeats on GPT-5 mini (×3 output margin for reasoning tokens) | ≈ 435 | ≈ $1.40 |
-| 4. Optional: full set × 1 on Sonnet 5.5 | ≈ 145 | ≈ $2.00 |
-| **Expected total** | | **≈ $1.70 without stage 4, ≈ $3.70 with it** |
-
-**Proposed hard cap: $5.** It's enforced three ways:
-1. **On OpenRouter (authoritative).** Create a dedicated API key for this evaluation under OpenRouter → *Settings → API Keys → Create key*, and set its **credit limit** to $5. OpenRouter is prepaid, so loading only about $5 of credit is a second ceiling.
-2. **In our runner (defence in depth).** Paid mode refuses to start unless `EVAL_ALLOW_PAID=1`, `--confirm-paid`, `--max-calls`, and `--max-cost-usd` are all set. It stops at whichever cap is reached first. The cost cap uses provider-reported cost, so `--max-calls` is the fallback guard if cost isn't reported.
-3. **Per-call timeout and no SDK retries,** so a hanging provider can't loop.
-
-Example command, run only after approval:
-`EVAL_ALLOW_PAID=1 OPENROUTER_API_KEY=… LLM_PRIMARY_MODEL=anthropic/claude-haiku-5.5 npm run eval -- --mode openrouter --confirm-paid --repeat 3 --max-calls 500 --max-cost-usd 1`
-
-## 6. Unavailable until a real model or database is used
-
-| Measurement | Needs |
-|---|---|
-| Real model latency, time to first token, tokens, and cost per turn | OpenRouter (paid run) |
-| Real tool-selection, argument, faithfulness, and clarification accuracy | OpenRouter (paid run) |
-| Whether live OpenRouter responses carry `usage.cost` where we read it | OpenRouter |
-| PostgreSQL latency for context load and persist; the Prisma store's correctness | A configured Postgres or Neon database |
-| Latency over the internet and from a deployment region | A deployment (not approved) |
-| Behaviour under concurrent load | A load test (not run; single client only) |
+| Real model latency, time to first token, tokens, and cost per turn | A real LLM via OpenRouter | Not performed (free-only scope) |
+| Real tool-selection, argument, faithfulness, and clarification accuracy | A real LLM via OpenRouter | Not performed (free-only scope) |
+| Whether live OpenRouter responses carry `usage.cost` where we read it | A real LLM via OpenRouter | Verified only on synthetic payloads |
+| PostgreSQL latency for context load and persist; correctness of the Prisma store, migration, and seed | A configured Postgres database | Not performed: type-checked only, plus an offline migration-drift test |
+| Latency over the internet and from a deployment region | A deployment | Not performed (no deployment) |
+| Behaviour under concurrent load | A load test | Not performed (single sequential client only) |
 
 ## 7. Scaling: what changes at significantly higher volume
 

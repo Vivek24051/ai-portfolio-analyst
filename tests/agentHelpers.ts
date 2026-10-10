@@ -62,7 +62,9 @@ export function chatDeps(stores: MemoryStores, primary: ChatModel, fallback: Cha
     router: { primary, fallback, callTimeoutMs: 2_000 },
     historyLimit: 30,
     turnDeadlineMs: 5_000,
-    now: () => new Date("2026-10-10T10:00:00Z"),
+    // Real clock: a pinned date made proposals "expire" when the suite ran >15 min after it
+    // (confirm/view paths correctly use the real clock).
+    now: () => new Date(),
     ...over,
   };
 }
