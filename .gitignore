@@ -16,8 +16,8 @@ eval/results/*.jsonl
 .vercel
 .DS_Store
 
-# Assignment-provided files are kept out of the repo (owner's instruction).
-# Seed/tests read data/original/ — see README "Dataset files" for how to provide them.
+# Assignment-provided originals stay out of the repo (owner's instruction), especially the PDF.
+# The synthetic CSVs + DATASET.md are committed as copies in data/seed/ (see README "Dataset files").
 /AI-Portfolio-Analyst-Assignment.pdf
 /DATASET.md
 /users.csv

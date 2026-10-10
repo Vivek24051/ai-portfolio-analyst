@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { seedFile } from "@/data/paths";
 import { buildSeed, type SeedResult } from "@/data/seedData";
 import type { Property } from "@/domain/types";
 
-const dir = join(__dirname, "..", "data", "original");
-
 /** The real assignment CSVs, parsed fresh for each call. */
 export function loadSeed(): SeedResult {
-  return buildSeed(readFileSync(join(dir, "users.csv"), "utf8"), readFileSync(join(dir, "properties.csv"), "utf8"));
+  return buildSeed(readFileSync(seedFile("users.csv"), "utf8"), readFileSync(seedFile("properties.csv"), "utf8"));
 }
 
 export function propsOf(userId: string, seed = loadSeed()): Property[] {

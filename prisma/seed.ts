@@ -1,4 +1,4 @@
-// Seeds Postgres from the untouched assignment CSVs in data/original/.
+// Seeds Postgres from the committed synthetic dataset in data/seed/ (unmodified assignment CSVs).
 //
 //   npm run db:seed          upsert users + seed properties (idempotent; resets seed rows to CSV values)
 //   npm run db:seed:dry      parse/validate/normalise only, print the report, no DB connection
@@ -6,16 +6,14 @@
 // Properties created through chat (source = "chat") are never touched by re-seeding.
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { seedFile } from "../src/data/paths";
 import { buildSeed } from "../src/data/seedData";
-
-const DATA_DIR = join(process.cwd(), "data", "original");
 
 async function main() {
   const dryRun = process.argv.includes("--dry-run");
   const seed = buildSeed(
-    readFileSync(join(DATA_DIR, "users.csv"), "utf8"),
-    readFileSync(join(DATA_DIR, "properties.csv"), "utf8"),
+    readFileSync(seedFile("users.csv"), "utf8"),
+    readFileSync(seedFile("properties.csv"), "utf8"),
   );
 
   console.log(`Parsed ${seed.users.length} users and ${seed.properties.length} properties.`);

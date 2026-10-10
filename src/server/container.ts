@@ -1,14 +1,14 @@
 import "server-only";
 // Composition root: picks the store backend and the model router from env.
 //
-//   DATA_BACKEND=memory (default)  in-memory stores seeded from data/original/*.csv; resets on restart
+//   DATA_BACKEND=memory (default)  in-memory stores seeded from data/seed/*.csv; resets on restart
 //   DATA_BACKEND=prisma            PostgreSQL via Prisma (requires DATABASE_URL + migrations)
 //
 //   OPENROUTER_API_KEY + LLM_PRIMARY_MODEL set → OpenRouter (optional LLM_FALLBACK_MODEL)
 //   otherwise                                   → dev stub model (no LLM, no cost)
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { seedFile } from "@/data/paths";
 import { loadAgentConfig, type AgentConfig } from "@/agent/config";
 import { createDevStubModel } from "@/agent/devStubModel";
 import { createOpenRouterModel, type ModelRouter } from "@/agent/model";
@@ -33,8 +33,7 @@ async function createStores(backend: "memory" | "prisma"): Promise<Stores> {
     const [{ prisma }, { createPrismaStores }] = await Promise.all([import("./db"), import("./stores/prisma")]);
     return createPrismaStores(prisma);
   }
-  const dir = join(process.cwd(), "data", "original");
-  const seed = buildSeed(readFileSync(join(dir, "users.csv"), "utf8"), readFileSync(join(dir, "properties.csv"), "utf8"));
+  const seed = buildSeed(readFileSync(seedFile("users.csv"), "utf8"), readFileSync(seedFile("properties.csv"), "utf8"));
   return createMemoryStores(seed);
 }
 

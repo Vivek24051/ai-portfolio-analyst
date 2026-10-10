@@ -77,7 +77,7 @@ You need Node ≥ 20.9. **No database and no API key are required** for developm
 
 ```bash
 npm install
-# Put the assignment CSVs in data/original/ (see "Dataset files")
+# The synthetic CSVs are committed in data/seed/ (see "Dataset files")
 npm test                 # all suites; models and persistence are mocked
 npm run build            # production build; needs no env vars
 npm run dev              # http://localhost:3000; in-memory data + dev stub model
@@ -93,7 +93,18 @@ Production (`next start`) refuses to issue sessions unless `SESSION_SECRET` (≥
 
 ## Dataset files
 
-The assignment's files are **not committed** to this repository. Before running seeds or tests, put the original `users.csv`, `properties.csv` and `sample_requests.csv` in `data/original/`. The seed script, the in-memory store and the test suite read from there, and treat those files as read-only.
+The synthetic dataset is committed in [`data/seed/`](data/seed/) as byte-identical copies of the assignment files, so a fresh clone can run the app and the tests.
+
+| File | Used by |
+|---|---|
+| `users.csv` | Seed (Postgres), in-memory store, tests: the demo users |
+| `properties.csv` | Seed (Postgres), in-memory store, tests: the portfolios |
+| `sample_requests.csv` | Reference prompts for the evaluation harness (Phase 5) and the chat's suggestion chips |
+| `DATASET.md` | The assignment's own dataset notes, kept for reference |
+
+These files are **read-only inputs**. They are never edited; normalisation happens in code and is logged by `npm run db:seed:dry`.
+
+The assignment PDF and the original root-level copies are deliberately not committed (`.gitignore`).
 
 ## How a chat turn works
 
