@@ -1,14 +1,17 @@
 # Deployment readiness (Vercel Hobby + free PostgreSQL)
 
-> **Status: deployed in stub mode** at https://ai-portfolio-analyst-two.vercel.app (Vercel + Neon), `LLM_PROVIDER=stub`.
+> **Status: deployed with Gemini (free tier)** at https://ai-portfolio-analyst-two.vercel.app (Vercel + Neon), commit `29c4b6d`, since 2026-10-11.
+> - **Model chain:** `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → labelled stub.
+> - **History:** the site ran `LLM_PROVIDER=stub` until then.
 >
-> **Checked by hand on the live site by the owner:**
-> - `model: dev-stub` and `data: prisma` in the admin header;
-> - chat, admin login and the conversation list work;
-> - conversations are stored in Neon;
-> - the retail-share, missing-ROI-data and update → confirm/cancel flows (commit `5996dba`).
+> **Checked by hand on the live site by the owner (2026-10-11):**
+> - `model: gemini` and `data: prisma` in the admin header;
+> - an overview and a follow-up answered by Gemini with correct tool figures, and no fallback or attention flag;
+> - **earlier, in stub mode:** chat, admin login, conversation storage in Neon, and the update → confirm/cancel flow.
 >
-> There is **no automated test against the deployment**. Later commits and the current working tree are **not deployed**. Provider limits on this page (Vercel, Neon, Gemini, OpenRouter) have **not** been checked against live documentation or accounts.
+> **Test path before switching:** the Gemini settings were first tried on a Vercel **Preview** scoped to a `gemini-preview` branch, with in-memory data so Neon was untouched. That first test exposed the thought-signature bug (D59).
+>
+> There is **no automated test against the deployment**. Provider limits were read from the owner's AI Studio rate-limit screen on 2026-10-11 (Flash Lite models: 15 RPM, 500 RPD each); Vercel and Neon limits were not checked against live documentation.
 
 ## Blockers
 
@@ -48,9 +51,15 @@ These are deliberately **not** changed in code, because the right values depend 
 | `DATABASE_URL` / `DIRECT_URL` | Provider's pooled / direct connection strings |
 | `SESSION_SECRET` | New random value, ≥ 32 characters. Don't reuse the local one. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / a strong password of ≥ 12 characters |
-| `LLM_PROVIDER` | `stub` (current live setting): no model client is built and no model API can be called |
+| `LLM_PROVIDER` | `gemini` (current live setting). `stub` switches back to the stub with no model client at all; redeploy after changing |
+| `GEMINI_API_KEY` | Production only, type Secret: a key from a Google AI Studio project with **billing disabled** |
+| `LLM_PRIMARY_MODEL` / `LLM_FALLBACK_MODEL` | `gemini-3.5-flash-lite` / `gemini-3.1-flash-lite` (Production only) |
+| `LLM_FALLBACK_PROVIDER` | `gemini` |
+| `LLM_STUB_LAST_RESORT` | `true` |
+| `LLM_MAX_MODEL_CALLS_PER_TURN` | `4` |
+| `CHAT_RATE_LIMIT_PER_MIN` | `3` (protects the free quota; per server instance) |
 | `OPENROUTER_ALLOW_PAID` | Leave unset or `false` (default). Only `true`/`1` allows paid OpenRouter models |
-| **Do not set (stub mode)** | `GEMINI_API_KEY`, `OPENROUTER_API_KEY` |
+| **Do not set** | `OPENROUTER_API_KEY` |
 
 `.env.local` is git-ignored and is **not** uploaded by a Git-based deployment. Set every value above in the provider dashboard.
 
@@ -66,26 +75,28 @@ These are deliberately **not** changed in code, because the right values depend 
   - How does auto-suspend behave?
 - **Gemini, later only:** a free-tier key on a project with billing **disabled**.
 
-## Enabling a real model later (free-only; not done)
+## Enabling a real model (free-only; done on 2026-10-11)
 
-This is configuration only; the code is in place and tested offline with scripted models.
+Configuration only, plus the thought-signature fix (D59) found by the first real test.
 
 **Settings:**
 - `LLM_PROVIDER=gemini`, `GEMINI_API_KEY` and `LLM_PRIMARY_MODEL`: a model your AI Studio project shows free quota for.
-- Optionally `LLM_FALLBACK_PROVIDER=openrouter`, `OPENROUTER_API_KEY` and `LLM_FALLBACK_MODEL=<vendor/model>:free`.
+- `LLM_FALLBACK_PROVIDER=gemini` and `LLM_FALLBACK_MODEL`: a second free model with its own quota. OpenRouter `:free` is also possible but was not used.
 - `LLM_STUB_LAST_RESORT` stays `true` (the default).
 
 **Guarantees in code (offline tests):**
 - OpenRouter ids without `:free` are refused unless `OPENROUTER_ALLOW_PAID=true`.
-- A 401/402 is never retried on the same provider.
+- A 400 invalid key, 401, 402 or 403 is never retried on the same provider; a 429 cools that model down across turns; at most 4 real calls per message.
 - If every real model fails, the labelled stub answers and the conversation is flagged `model_degraded`.
 
-**Not verified:**
-- that any specific model is free, available, or supports tool calling;
-- real-model latency within `maxDuration` (R3);
-- behaviour under the free-tier rate limits.
+**Checked by hand:**
+- both Flash Lite models are on the free tier for this project;
+- AI Studio lists function calling for both;
+- `gemini-3.5-flash-lite` completed tool-using turns in about 3–4 s, well within `maxDuration` (R3).
 
-Verify these manually before switching, and keep billing disabled (Gemini) and credits at zero (OpenRouter).
+**Not verified:** behaviour when the free quota is exhausted live, and the fallback model's own tool calling (it hasn't answered a live turn yet).
+
+Keep billing disabled (Gemini) and credits at zero (OpenRouter).
 
 ## Order of operations (as carried out)
 
@@ -96,3 +107,5 @@ Verify these manually before switching, and keep billing disabled (Gemini) and c
    - `/api/session` reports `modelMode: "dev-stub"` and `dataBackend: "prisma"`;
    - a chat as Rahul works;
    - the conversation appears in `/admin` and survives a redeploy.
+5. ✅ Gemini tested on a branch-scoped Vercel Preview (`gemini-preview`, in-memory data), then locally. The thought-signature bug was found and fixed (D59).
+6. ✅ Production switched to `LLM_PROVIDER=gemini` with Production-only Gemini variables, redeployed, and checked by hand (see the status note).

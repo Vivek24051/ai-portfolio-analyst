@@ -11,7 +11,7 @@ Each entry: decision, why, trade-off. Labels: **[fact]** comes from the brief or
 | Correct numbers | D4, D5 (the LLM never does arithmetic), D18 (pre-formatted tool output), D44 (numeric faithfulness checked in production) |
 | Dataset judgement calls | D6 (type normalisation; COMMERCIAL = retail + office), D7 (location), D8 (missing purchase prices and dates are reported, never guessed) |
 | Safe writes | D11 (propose → confirm), D12 (near-duplicates), D17 (no identity in tool arguments), D25 (Confirm skips the LLM) |
-| Failures and model routing | D20 (timeouts), D21, D40, D46, D57 (fallback chain, circuit breaker, free-only guard), D58 (Gemini quota cooldown, account errors, per-turn call cap), D59 (Gemini thought signatures), D23 (honest failure replies) |
+| Failures and model routing | D20 (timeouts), D21, D40, D46, D57 (fallback chain, circuit breaker, free-only guard), D58 (Gemini quota cooldown, account errors, per-turn call cap), D59 (Gemini thought signatures), D60 (live on Gemini free tier), D23 (honest failure replies) |
 | Observability and the business view | D34–D38 (admin auth, attention flags, nulls for unreported metrics), D41 (redaction) |
 | Evaluation honesty | D42, D43 (golden set and controls), D47 (benchmarks keep their conditions), D56 (the stub is no longer a negative control) |
 | Cost | D24, D49, D52 (stub default, free Gemini tier, `LLM_PROVIDER=stub` builds no client) |
@@ -518,3 +518,17 @@ OpenRouter requests are unchanged.
 **Evidence:** `tests/geminiSignatures.test.ts` drives the real LangChain client against synthetic Gemini responses (JSON and SSE), including a full chat turn where the fake rejects requests without the signature. Disabling the wrapper makes 4 of its 8 tests fail.
 
 **Not verified:** that live Gemini accepts the replayed signatures, the placeholder, or a signature replayed to a different model.
+
+## D60. Live deployment switched from the stub to Gemini free tier (2026-10-11)
+**Decision:** Production runs `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → labelled stub, with `LLM_MAX_MODEL_CALLS_PER_TURN=4` and `CHAT_RATE_LIMIT_PER_MIN=3`. The key comes from a Google AI Studio project with billing disabled; OpenRouter is not configured.
+
+**Why these models:** on the owner's AI Studio rate-limit screen (2026-10-11), the Flash Lite models were the text models with a usable free quota (15 RPM, 500 RPD each). The Flash models had 5 RPM / 20 RPD, which is only a handful of messages a day at 2–4 calls per message. AI Studio lists function calling for both Flash Lite models, and they have separate quotas, so the fallback roughly doubles capacity. Fixed model ids were used rather than `-latest` aliases, which can change silently.
+
+**How it was rolled out:**
+1. **Preview:** a Vercel Preview scoped to a `gemini-preview` branch, with `DATA_BACKEND=memory` so production data was untouched. It exposed the thought-signature bug.
+2. **Local fix and test:** the bug was fixed and checked locally against real Gemini (D59).
+3. **Production:** the Production variables were switched and the site redeployed. Rolling back is `LLM_PROVIDER=stub` plus a redeploy.
+
+**Trade-offs:** free-tier quota limits capacity, and when it runs out, replies come from the labelled stub. Prompts on Google's free tier may be used by Google to improve its products, which is acceptable for this synthetic dataset only.
+
+**Evidence:** hand checks only (README status note); no automated test or evaluation calls Gemini.

@@ -1,6 +1,6 @@
 # Architecture
 
-> All components below are built. Deployed on Vercel + Neon in **stub mode** (`LLM_PROVIDER=stub`, no LLM). See the README for what has and has not been verified against real services — in particular, no real Gemini/OpenRouter call is part of any automated test.
+> All components below are built. Deployed on Vercel + Neon with **Gemini 3.5 Flash Lite** (free tier) → Gemini 3.1 Flash Lite → labelled stub. See the README for what has and has not been verified against real services. Gemini was checked by hand; no real Gemini/OpenRouter call is part of any automated test.
 
 ```mermaid
 flowchart LR

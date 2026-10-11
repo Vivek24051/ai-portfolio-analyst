@@ -89,7 +89,7 @@ Golden set: **40 cases, 50 turns** across 9 categories (§3). The scores validat
 | Stub version | Cases | Faithfulness | Clarification | Safety |
 |---|---|---|---|---|
 | `fe57eb4` (first deployment) | 20/40 | 33/33 | 2/7 | 0 |
-| `5996dba` (live deployment) | 23/40 | 35/35 | 2/7 | 0 |
+| `5996dba` (deployed at the time) | 23/40 | 35/35 | 2/7 | 0 |
 | Current working tree, 2026-10-10 UTC | **40/40** | 37/37 | 7/7 | **0** |
 
 The current tree also scores tool selection 42/42, arguments 20/20, expected figures 23/23, proposals 14/14 and hypothetical labelling 5/5.
@@ -195,15 +195,20 @@ The one perturbed reply that still "passed" faithfulness (G2) contains no ₹ or
 2. **Trim tool schemas** (shorter descriptions, fewer optional fields). They are 83% of input tokens.
 3. **Route simple lookups to a cheaper or faster model,** if the evaluation shows equal accuracy.
 
-## 5. Real-model evaluation: intentionally not performed (free-only scope)
+## 5. Real-model evaluation: not performed (free-only scope); manual checks only
 
 This submission is deliberately **free**.
 - No test, evaluation script or benchmark calls an LLM endpoint, and none is needed to build, test or run the app.
-- The live demo runs `LLM_PROVIDER=stub`.
+- The live demo runs **Gemini 3.5 Flash Lite on the free tier** (since 2026-10-11), with 3.1 Flash Lite and the labelled stub as fallbacks.
 - The mixed-provider fallback chain (Gemini → OpenRouter `:free` → stub) is tested **offline with scripted models only**.
 - Its behaviour against live providers, including their real 429/401/402 responses, has not been observed.
 
-**Gemini (free tier) is supported and was checked manually.** One manual chat turn ("What does my portfolio look like?" as U001) returned correct figures from the portfolio tool and stated the purchase-price gap honestly. No latency, token, cost, or accuracy figures were recorded for Gemini, so none are reported here. The 40-case evaluation was not run against it; doing so would need a Gemini mode in the runner and would consume a few hundred free-tier requests.
+**Gemini (free tier) was checked by hand on 2026-10-11:**
+- **Flows checked:** overview, follow-up, what-if, and propose → cancel locally; overview and follow-up on the live site. All answered by Gemini, with the correct tool figures and no attention flag.
+- **Latency observed:** tool-using turns took about **3–4 s** end to end. The admin dashboard showed 3,071 ms for one local turn. This is a handful of turns, not a benchmark; there is no p50/p95 for Gemini.
+- **Tokens and cost:** not reported. Gemini's streamed replies carry no usage figures on this endpoint, so the dashboard shows "—".
+- **Bug found by the first real call:** Gemini 3.x rejected tool follow-ups without the tool call's thought signature. Fixed in D59; until then the stub answered, as designed.
+- **Not run:** the 40-case evaluation. It would need a Gemini mode in the runner and would use a few hundred free-tier requests.
 
 What exists, so a real-model run could be added later without code changes:
 - `npm run eval -- --mode openrouter` replays the same 40 golden cases and graders against a real model.
@@ -216,14 +221,14 @@ The **workload** of such a run is known from offline measurement (§2.4): one pa
 
 | Measurement | Needs | Status |
 |---|---|---|
-| Real model latency, time to first token, tokens, and cost per turn | A real LLM (Gemini free tier is connectable) | Not measured. Gemini was only exercised manually |
+| Real model latency, time to first token, tokens, and cost per turn | A real LLM (Gemini free tier, now live) | Only observed by hand: about 3–4 s per tool-using turn over a handful of turns. Tokens and cost are not reported by the provider; no TTFT or percentiles recorded |
 | Real tool calling on a free OpenRouter model; whether a given `:free` model is available and supports tools | OpenRouter (no credits) | Not verified; the guard checks only the id suffix |
 | Fallback-chain behaviour against live 429 / 401 / 402 and latency of a fallback hop | Real providers | Not measured; tested with scripted models only |
 | Real tool-selection, argument, faithfulness, and clarification accuracy | A real LLM | Not measured. The golden set has not been run against Gemini |
 | Whether live OpenRouter responses carry `usage.cost` where we read it | A real LLM via OpenRouter | Verified only on synthetic payloads |
 | Correctness of the Prisma store, migration, and seed | A Postgres database | **Verified** with `npm run test:db` (14/14) on a local PostgreSQL 16 test database (Docker) |
 | PostgreSQL latency for context load and persist; a hosted or pooled database (e.g. Neon) | A hosted database | Not measured. The live app runs on Neon and was checked by hand, with no automated suite or timing |
-| Latency over the internet and from a deployment region | A deployment | Not measured. The app is deployed (Vercel, stub mode), but no latency was recorded beyond one admin dashboard reading of a single stub turn |
+| Latency over the internet and from a deployment region | A deployment | Not measured systematically. The app is deployed (Vercel + Neon, Gemini); only the hand-checked turns above were observed |
 | Behaviour under concurrent load | A load test | Not performed (single sequential client only) |
 
 ## 7. Scaling: what changes at significantly higher volume

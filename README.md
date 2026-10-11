@@ -13,18 +13,23 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 > | 4 | Admin dashboard + observability | ✅ (in-memory store, dev stub and scripted models) |
 > | 5 | Evaluation and performance | ✅ free-only: grader/control tests and local benchmarks ([FREE_ONLY_EVALUATION.md](FREE_ONLY_EVALUATION.md)) |
 >
-> **Deployed:** https://ai-portfolio-analyst-two.vercel.app (Vercel + Neon PostgreSQL), running **`LLM_PROVIDER=stub`**, the keyword dev stub, **not an LLM**. These checks were done by hand on the live site:
-> - the admin header shows `model: dev-stub` and `data: prisma`;
-> - chat and admin pages work, and conversations are stored in Neon;
-> - the retail-share, missing-ROI-data and update → confirm/cancel flows work.
+> **Deployed:** https://ai-portfolio-analyst-two.vercel.app (Vercel + Neon PostgreSQL), commit `29c4b6d`, running a **real model**:
+> - **Model chain:** **Gemini 3.5 Flash Lite** (`gemini-3.5-flash-lite`, Google AI Studio **free tier**, billing disabled) → fallback **Gemini 3.1 Flash Lite** → the labelled dev stub as a last resort.
+> - **Quota guards:** at most 4 real model calls per message, and 3 messages per minute per user.
 >
-> The live deployment is commit `5996dba`; later work is described in this repository but **not yet deployed**.
+> **Checked by hand on 2026-10-11** (manual checks, not an automated test):
+> - **Live site:**
+>   - the admin header shows `model: gemini` and `data: prisma`;
+>   - "What does my portfolio look like?" and the follow-up "Which of those earns more annual rent?" were answered by Gemini in its own words, with the correct tool figures (₹29.7 Cr total, 71.38% retail; P001 ₹72 L, P003 ₹60 L);
+>   - no fallback, error or attention flag.
+> - **Locally, against real Gemini:** the same overview and follow-up, a what-if (labelled hypothetical, nothing saved) and an update proposal that was cancelled (nothing saved).
+> - **Latency:** tool-using turns took about **3–4 s** end to end. This is from a handful of turns, not a benchmark.
+> - **A bug found and fixed:** the first real test showed Gemini 3.x rejecting tool follow-ups without a "thought signature"; the stub answered, as designed. Fixed in D59.
 >
-> **Real models:** Gemini and OpenRouter clients exist, with a Gemini → OpenRouter `:free` → stub fallback chain.
-> - The fallback chain, error handling and free-only guards are covered by **offline tests with scripted models only**.
-> - **No real Gemini or OpenRouter call is part of any test or evaluation.**
-> - Gemini was tried **manually** in local chat early on.
-> - Real-model latency, tool-calling quality and free-tier availability are **unmeasured and unverified**.
+> **Not verified:**
+> - the 40-case evaluation against Gemini (never run);
+> - behaviour under load or when the free quota runs out live;
+> - OpenRouter, which is never called.
 >
 > All automated tests and evaluations run offline (scripted models, an oracle reference policy, the keyword stub). The one exception is the opt-in `npm run test:db`, which ran against a local PostgreSQL test database.
 
@@ -32,7 +37,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 
 | Deliverable | Where |
 |---|---|
-| 1. Live interactive tool | https://ai-portfolio-analyst-two.vercel.app (chat) and `/admin` (business view, HTTP Basic auth). It runs commit `5996dba` in stub mode; see the status note above |
+| 1. Live interactive tool | https://ai-portfolio-analyst-two.vercel.app (chat) and `/admin` (business view, HTTP Basic auth). It runs Gemini 3.5 Flash Lite (free tier) with fallbacks; see the status note above |
 | 2. Repository | This repo: setup (below), architecture, assumptions ("Data handling: assumptions"), decisions, known limitations, external dependencies |
 | 3. `SOUL.md` | [SOUL.md](SOUL.md) |
 | 4. Architecture diagram | [docs/architecture.md](docs/architecture.md) (Mermaid; renders on GitHub) |
@@ -42,7 +47,10 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 
 **For reviewers trying the live tool:**
 - Open the chat, pick a demo client (for example Rahul Mehta), and try "What does my portfolio look like?", "How much of my portfolio is retail?", "Which of those earns more annual rent?", "What if the rent of P001 increases by 10%?", or "Update P001's annual rent to ₹80 lakh per year", then Confirm or Cancel.
-- The live model is the **dev stub, a keyword router, not an LLM**. Wording outside its patterns gets a help message.
+- The live model is **Gemini 3.5 Flash Lite on Google's free tier**, so free-form wording works.
+  - **Free quota:** AI Studio showed 15 requests per minute and 500 per day per model on 2026-10-11, which is roughly 125–250 messages a day per model, at 2–4 calls per message. These limits can change.
+  - **If both Gemini models are unavailable** (quota used up, outage), the reply starts with **`[dev stub — AI model unavailable …]`**: the keyword stub answered instead, with figures from the same tools.
+  - **Older conversations** in the demo users' history are from earlier stub-only deployments and are labelled `[dev stub — …]`.
 - The admin username and password are **not in this repository**. They are shared privately through the submission form.
 
 **Verified offline on the current working tree (2026-10-11):**
@@ -51,7 +59,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 - `npm run build`: succeeds with `LLM_PROVIDER=stub`;
 - evaluations: oracle 40/40, perturbed 12/40 (caught as intended), stub 40/40, each with 0 safety violations.
 
-**Not verified:** any real Gemini or OpenRouter call.
+**Not verified by any automated test or evaluation:** real Gemini or OpenRouter calls. Gemini was checked by hand only (see the status note).
 
 ## Documents
 
@@ -71,7 +79,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 - **Next.js 16** (App Router) and **TypeScript**. One deployable unit contains the chat UI, the admin UI, and the API routes.
 - **LangGraph.js**: a single tool-calling agent loop as an explicit state graph, capped at 5 tool rounds.
 - **Model access** through LangChain's OpenAI-compatible client, as a chain: **primary → fallback (may be a different provider) → labelled dev stub as last resort**, with per-call and per-turn timeouts:
-  - **Google Gemini** (free tier, optional; tried manually only)
+  - **Google Gemini** (free tier): the live model, `gemini-3.5-flash-lite` with `gemini-3.1-flash-lite` as fallback; checked by hand, not by automated tests
   - **OpenRouter**: only `:free` model ids unless `OPENROUTER_ALLOW_PAID=true` (off by default); never called in tests
   - **dev stub**: the default (`LLM_PROVIDER=stub`), a keyword router with no LLM and no cost
 - **PostgreSQL** with **Prisma 6** in production (Neon). An **in-memory store** implements the same interface for local development and tests.
@@ -454,7 +462,7 @@ The oracle and perturbed controls also run inside `npm test` (`tests/eval.test.t
 | Perturbed oracle (falsified figures; must be caught) | 12/40 | 1/34 | 7/7 | 0 |
 | Dev stub, earlier version (keyword router; must be caught) — historical, commit `76a9571` | 17/40 | 31/31 (copies tool figures verbatim) | 0/7 | 0 |
 | Dev stub at commit `fe57eb4` (first deployed version) — historical | 20/40 | 33/33 | 2/7 | 0 |
-| Dev stub at commit `5996dba` (live deployment) — historical | 23/40 | 35/35 | 2/7 | 0 |
+| Dev stub at commit `5996dba` (deployed at the time) — historical | 23/40 | 35/35 | 2/7 | 0 |
 | Dev stub, current working tree (re-run 2026-10-10 UTC, offline) — **tuned against these cases** | 40/40 | 37/37 | 7/7 | 0 |
 
 **What the stub's 40/40 does and does not mean.**
@@ -543,18 +551,17 @@ All of these are recorded in [DECISIONS.md](DECISIONS.md).
 Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38% retail, and excluding Bandra gives ₹17.7 Cr.
 
 **Not tested yet:**
-- **Systematic real-model evaluation.** Gemini (free tier) has been used manually in the chat, but the 40-case evaluation has **not** been run against any real model. Real-model latency, tokens, tool-calling accuracy and fallback behaviour against live providers are **not measured** (PERFORMANCE.md §5).
+- **Systematic real-model evaluation.** Gemini runs the live site and was checked by hand (see the status note), but the 40-case evaluation has **not** been run against it. Tool-calling accuracy across many phrasings, token use, and latency beyond a handful of turns are **not measured** (PERFORMANCE.md §5).
 - **Live OpenRouter responses.** The integration and the fallback chain are verified only against synthetic payloads and scripted models. Whether a given `:free` model is available and supports tool calling is **unverified**.
 - **Live Gemini errors and quota.** The 400/401/403/429 handling, the cooldowns and the call cap are tested only against **synthetic** Gemini responses. **Not observed:**
   - what Gemini actually returns for a bad key or an exhausted quota;
   - whether it sends `Retry-After`;
   - whether a rejected or timed-out request counts toward quota;
-  - how many calls a real model makes per turn.
+  - how many calls a real model makes per turn, beyond the handful of hand-checked turns.
 - **Deployment, beyond manual checks.**
-  - The app is deployed (Vercel + Neon, stub mode) and was checked by hand.
+  - The app is deployed (Vercel + Neon, Gemini free tier) and was checked by hand.
   - There is no automated test against the deployment.
   - There's no internet-latency or concurrent-load measurement.
-  - The current working tree is not yet deployed.
 - **PostgreSQL beyond the opt-in suite and the live demo.**
   - The Prisma store, migration, seed and admin queries passed `npm run test:db` on a local PostgreSQL 16 test database.
   - The live app runs on Neon and was used by hand.
@@ -564,8 +571,10 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 
 ## Known limitations
 
-- **Real model only manually checked.** The live app runs on the dev stub, which shows real tools, calculations and safeguards, but not conversation quality.
-  - **With a real model:** answers depend on that model and its free-tier rate limits, and have only been checked by hand.
+- **Real model only manually checked.** The live app runs Gemini 3.5 Flash Lite on the free tier.
+  - **Quality:** answers depend on that model; they have been checked by hand on a few flows, not evaluated systematically.
+  - **Free-tier limits:** about 15 requests per minute and 500 per day per model, as shown in AI Studio on 2026-10-11. When both Gemini models are exhausted, replies come from the labelled stub until the quota resets.
+  - **Thought signatures:** signatures for tool calls in earlier messages live in each server instance's memory. A follow-up handled by another instance sends Google's documented placeholder instead. A live follow-up worked, but which path it took was not observed.
   - **When every real model fails:** the labelled stub answers and the conversation is flagged `model_degraded`.
 - **Quota safeguards are per server instance and conservative.**
   - Cooldowns live in each serverless instance's memory: another instance may still call a model that is cooling elsewhere, and a restart clears them.
@@ -579,13 +588,13 @@ Expected figures were derived by hand, for example U001 = ₹29.7 Cr with 71.38%
 - **UI tested without a browser.** The UI has been tested in jsdom and over local HTTP, but not in a real browser by an automated test, and not with a real LLM's streamed output.
 - **Admin auth** is single-account HTTP Basic auth: there is no logout (close the browser), no roles, and the lockout counter is per server instance.
 - **Token usage and cost** are recorded only if the provider reports them. The cost field's location was verified on synthetic OpenRouter payloads only.
-- **Attention queue in a live demo.** With the dev stub, the admin "needs attention" queue stays empty unless the user asks for a person or for tax/legal advice. Those messages call `flag_for_human`, and the conversation appears there; nobody is notified automatically. Other flags (`unsupported_numbers`, `model_unavailable`, `model_degraded`) are demonstrated by the tests and the evaluation.
+- **Attention queue in a live demo.** The admin "needs attention" queue usually stays empty: it fills when the user asks for a person or for tax/legal advice, or when a model failure makes the stub answer. Those messages call `flag_for_human`, and the conversation appears there; nobody is notified automatically. Other flags (`unsupported_numbers`, `model_unavailable`, `model_degraded`) are demonstrated by the tests and the evaluation.
 
 ## Demo walkthrough (5–10 minutes, free)
 
 The timed script is in [docs/walkthrough.md](docs/walkthrough.md). It covers two setups:
-- **The live site** (commit `5996dba`): it has no hand-off route.
-- **A local run of the current tree**: needs `LLM_PROVIDER=stub` in `.env.local`, or `npm run dev` calls a real model.
+- **The live site:** Gemini 3.5 Flash Lite, with Neon data.
+- **A local run:** the stub (`LLM_PROVIDER=stub`) as a free backup, or Gemini with your own key.
 
 It lists which claims are measured and which are not.
 
@@ -594,6 +603,6 @@ It lists which claims are measured and which are not.
 | Dependency | Status |
 |---|---|
 | PostgreSQL | Optional (`DATA_BACKEND=prisma`). Local install, or Neon (free tier) for deployment |
-| Google Gemini API key | Optional, free tier (Google AI Studio; keep billing disabled). Used for manual testing. Without it the dev stub is used |
+| Google Gemini API key | Free tier (Google AI Studio; billing disabled). Used by the live deployment. Without it the dev stub is used |
 | OpenRouter API key | Optional fallback. Only `:free` model ids are accepted unless `OPENROUTER_ALLOW_PAID=true` (off by default). Never called by any test or evaluation; not used by the deployment |
 | Vercel, Neon | Hosting for the live demo (free tiers) |
