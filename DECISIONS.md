@@ -11,7 +11,7 @@ Each entry: decision, why, trade-off. Labels: **[fact]** comes from the brief or
 | Correct numbers | D4, D5 (the LLM never does arithmetic), D18 (pre-formatted tool output), D44 (numeric faithfulness checked in production) |
 | Dataset judgement calls | D6 (type normalisation; COMMERCIAL = retail + office), D7 (location), D8 (missing purchase prices and dates are reported, never guessed) |
 | Safe writes | D11 (propose → confirm), D12 (near-duplicates), D17 (no identity in tool arguments), D25 (Confirm skips the LLM) |
-| Failures and model routing | D20 (timeouts), D21, D40, D46, D57 (fallback chain, circuit breaker, free-only guard), D58 (Gemini quota cooldown, account errors, per-turn call cap), D23 (honest failure replies) |
+| Failures and model routing | D20 (timeouts), D21, D40, D46, D57 (fallback chain, circuit breaker, free-only guard), D58 (Gemini quota cooldown, account errors, per-turn call cap), D59 (Gemini thought signatures), D23 (honest failure replies) |
 | Observability and the business view | D34–D38 (admin auth, attention flags, nulls for unreported metrics), D41 (redaction) |
 | Evaluation honesty | D42, D43 (golden set and controls), D47 (benchmarks keep their conditions), D56 (the stub is no longer a negative control) |
 | Cost | D24, D49, D52 (stub default, free Gemini tier, `LLM_PROVIDER=stub` builds no client) |
@@ -498,3 +498,23 @@ The guard checks only the id suffix. Gemini has no equivalent in code: it stays 
 - real Gemini error bodies and headers;
 - whether rejected or timed-out requests count toward quota;
 - real calls per turn.
+
+## D59. Send Gemini thought signatures back with tool calls (2026-10-11)
+**Why:** the first local test with a real model (`gemini-3.5-flash-lite`, then `gemini-3.1-flash-lite`) showed tool selection working. The follow-up request, however, failed with HTTP 400: "Function call is missing a thought_signature in functionCall parts".
+- Gemini 3.x attaches an opaque signature to each tool call (`extra_content.google.thought_signature` on the OpenAI-compatible endpoint) and requires it back.
+- LangChain's OpenAI client drops that field.
+- The stub last resort answered correctly and flagged the turn `model_degraded`, as designed.
+
+**Decision:** a fetch wrapper used only by the Gemini client (`src/agent/geminiSignatures.ts`):
+- **Records** signatures from JSON and streamed responses, keyed by tool-call id, in a bounded per-process store (500 entries, oldest dropped).
+- **Re-attaches** them to the assistant tool calls in outgoing requests.
+- **Placeholder:** a step with no known signature (history from before a restart, or written on another server instance) gets Google's documented placeholder value on its first tool call.
+- **Bounded wait:** a request waits at most 2 s for a previous stream to finish being scanned.
+
+OpenRouter requests are unchanged.
+
+**Trade-offs:** signatures live in memory per instance, so cross-instance history relies on the placeholder. A signature produced by one Gemini model is also replayed to the fallback model.
+
+**Evidence:** `tests/geminiSignatures.test.ts` drives the real LangChain client against synthetic Gemini responses (JSON and SSE), including a full chat turn where the fake rejects requests without the signature. Disabling the wrapper makes 4 of its 8 tests fail.
+
+**Not verified:** that live Gemini accepts the replayed signatures, the placeholder, or a signature replayed to a different model.

@@ -16,7 +16,7 @@ Optional, to stop the build tools' anonymous telemetry pings (these are free and
 ## 1. The safety net: tests, types, build
 
 ```bash
-npm test            # 443 tests, all offline; models, storage and network are mocked
+npm test            # 451 tests, all offline; models, storage and network are mocked
 npm run typecheck   # tsc --noEmit
 npm run build       # prisma generate + next build; needs no environment variables
 ```

@@ -46,7 +46,7 @@ A conversational AI analyst for a real-estate portfolio, with a WhatsApp-style c
 - The admin username and password are **not in this repository**. They are shared privately through the submission form.
 
 **Verified offline on the current working tree (2026-10-11):**
-- `npm test`: 29 files, 443/443 tests;
+- `npm test`: 30 files, 451/451 tests;
 - `npm run typecheck`: clean;
 - `npm run build`: succeeds with `LLM_PROVIDER=stub`;
 - evaluations: oracle 40/40, perturbed 12/40 (caught as intended), stub 40/40, each with 0 safety violations.
@@ -264,7 +264,10 @@ How the chain behaves. All of this is covered by offline tests in `tests/provide
   - Keys never appear in logs, the admin trace or error text, because provider errors are redacted.
   - Configuration warnings never echo values.
 - **Gemini specifics:**
-  - only standard OpenAI-compatible request fields are sent;
+  - only standard OpenAI-compatible request fields are sent, plus Gemini 3.x **thought signatures**:
+    - each tool call's signature is recorded and sent back with it; without it Gemini rejects the follow-up with HTTP 400;
+    - tool-call history without a known signature gets Google's documented placeholder;
+    - tested offline only (`tests/geminiSignatures.test.ts`); whether live Gemini accepts the replayed requests is **unverified**;
   - token counts may show "—" (not reported);
   - cost is always "—".
 - **Incomplete or refused settings** fall back to the dev stub, never to a paid provider.

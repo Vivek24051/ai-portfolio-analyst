@@ -82,7 +82,7 @@ On setup A, skip this step and say that the hand-off route was added after the l
 **Show:** a terminal running `npm test`, then [PERFORMANCE.md](../PERFORMANCE.md) §2 and §5–7.
 
 **Say:**
-- "`npm test`: 443 tests, all offline. The oracle reference policy passes 40 of 40 cases. The perturbed oracle, which has falsified figures, is caught by the faithfulness check: 1 of 34 replies faithful."
+- "`npm test`: 451 tests, all offline. The oracle reference policy passes 40 of 40 cases. The perturbed oracle, which has falsified figures, is caught by the faithfulness check: 1 of 34 replies faithful."
 - "Measured: about 4 ms of server pipeline per turn in-process with a mock model, and about 10 ms per request over local HTTP with the stub."
 - "**Not measured:** real-model latency and tool-calling quality, Postgres or Neon latency, and internet latency to the deployment."
 - "Design-level latency: about 2 model calls per turn (p50), and tool schemas are about 83% of input tokens. Those are the first things I'd optimise."
