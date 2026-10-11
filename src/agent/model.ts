@@ -7,6 +7,7 @@ import { ChatOpenAI } from "@langchain/openai";
 import { AIMessage, type AIMessageChunk, type BaseMessage } from "@langchain/core/messages";
 import { safeErrorMessage } from "@/server/redact";
 import { createDeadline, raceAbort } from "./deadline";
+import { withThoughtSignatures } from "./geminiSignatures";
 import type { RunRecorder } from "./telemetry";
 import type { ToolSpec } from "./tools";
 
@@ -165,7 +166,8 @@ export function createGeminiModel(modelId: string, apiKey: string, options: Open
     modelId,
     apiKey,
     { provider: "gemini", baseURL: GEMINI_OPENAI_BASE_URL, parallelToolCalls: false, streamUsage: false },
-    options,
+    // Gemini 3.x rejects a tool result unless the tool call's thought signature is sent back (see geminiSignatures.ts).
+    { ...options, fetch: withThoughtSignatures(options.fetch) },
   );
 }
 
